@@ -1,0 +1,33 @@
+{
+  "camera_id": "demo_platform",
+  "frame_width": 1920,
+  "frame_height": 1080,
+  "_note": "Calibrated for data/input_videos/sample.mp4. This remains demo-safe while using platform-oriented naming.",
+  "zones": [
+    {
+      "id": "platform_zone",
+      "name": "Platform Waiting Area",
+      "polygon": [[120, 110], [1800, 110], [1800, 1050], [120, 1050]],
+      "warning_threshold": 5,
+      "critical_threshold": 10
+    },
+    {
+      "id": "concourse_zone",
+      "name": "Entry Exit Flow Area",
+      "polygon": [[480, 620], [1450, 620], [1450, 1060], [480, 1060]],
+      "warning_threshold": 3,
+      "critical_threshold": 6
+    }
+  ],
+  "lines": [
+    {
+      "id": "entry_gate",
+      "name": "Passenger Flow Line",
+      "start": [180, 560],
+      "end": [1740, 560],
+      "in_label": "IN",
+      "out_label": "OUT",
+      "direction_hint": "Top-to-bottom movement counts as IN for the sample."
+    }
+  ]
+}

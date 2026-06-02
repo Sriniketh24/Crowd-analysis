@@ -1,0 +1,22 @@
+# Head-detection dataset (single class) for YOLO fine-tuning.
+#
+# Primary dataset: RPEE-Heads (Railway Platforms and Event Entrances - Heads)
+#   Paper:   https://arxiv.org/abs/2411.18164  (IEEE: https://ieeexplore.ieee.org/document/10973050)
+#   Data:    https://doi.org/10.34735/ped.2024.2
+#   License: CC BY-SA 4.0 (attribution + share-alike)
+#
+# Prepared by: scripts/prepare_head_dataset.py --dataset rpee_heads
+# Layout produced (relative to `path`):
+#   images/train  labels/train   (official RPEE-Heads train split)
+#   images/val    labels/val     (official RPEE-Heads val split)
+# The official RPEE-Heads *test* split is held out (kept under
+# data/head_datasets/raw/rpee_heads) for final detector evaluation.
+#
+# Single class only: 0 = head.
+
+path: data/head_datasets/yolo/rpee_heads
+train: images/train
+val: images/val
+
+names:
+  0: head

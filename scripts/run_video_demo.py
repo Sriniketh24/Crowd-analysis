@@ -1,0 +1,508 @@
+"""Run local video demo pipeline with configured camera sources."""
+
+from __future__ import annotations
+
+import argparse
+import copy
+import json
+from pathlib import Path
+import sys
+from typing import Any
+
+import cv2
+import yaml
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from src.config import (
+    AppSettings,
+    CameraSettings,
+    choose_camera,
+    infer_camera_id,
+    infer_source_type,
+    load_app_settings,
+    load_camera_settings,
+    parse_source_value,
+    redact_source_uri,
+)
+from src.video.frame_processor import FrameProcessor
+from src.video.stream_reader import StreamReader
+from src.video.video_writer import VideoWriter
+from src.vision.annotator import annotate_frame
+from src.vision.crowd_analyzer import CrowdAnalyzer, ZoneAlertThresholds
+from src.vision.detector import Detector
+from src.vision.line_counter import LineConfig, LineManager
+from src.vision.tracker import Tracker
+from src.vision.zone_manager import ZoneConfig, ZoneManager
+
+
+def parse_args() -> argparse.Namespace:
+    """Parse command line args for video demo pipeline."""
+    parser = argparse.ArgumentParser(description="Run YOLO person detection/tracking demo.")
+    parser.add_argument("--config", type=Path, default=Path("configs/app.yaml"))
+    parser.add_argument("--camera-config", type=Path, default=Path("configs/cameras.yaml"))
+    parser.add_argument("--camera-id", type=str, default=None, metavar="CAMERA_ID")
+    parser.add_argument(
+        "--source",
+        type=str,
+        default=None,
+        help="Input source: file path, webcam index (e.g. 0), or RTSP/HTTP URL.",
+    )
+    parser.add_argument("--source-type", type=str, default=None, choices=["file", "webcam", "rtsp", "http"])
+    parser.add_argument(
+        "--output",
+        type=str,
+        default=None,
+        help="Output annotated video path.",
+    )
+    parser.add_argument(
+        "--zones-config",
+        type=Path,
+        default=None,
+        help="Path to zone/line JSON config file.",
+    )
+    parser.add_argument("--model", type=str, default=None, help="YOLO model weights path or model name.")
+    parser.add_argument("--device", type=str, default=None, help="Inference device: cpu, cuda, mps, etc.")
+    parser.add_argument("--tracker", type=str, default=None, choices=["bytetrack", "botsort"])
+    parser.add_argument("--confidence", type=float, default=None, help="Detection confidence threshold.")
+    parser.add_argument("--max-fps", type=float, default=None, help="Optional processing FPS cap.")
+    parser.add_argument("--frame-stride", type=int, default=None, help="Process every Nth frame.")
+    parser.add_argument("--resize-width", type=int, default=None, help="Resize frames before inference.")
+    parser.add_argument("--show", action="store_true", help="Show annotated preview window while processing.")
+    parser.add_argument(
+        "--db",
+        type=str,
+        default=None,
+        metavar="DB_PATH",
+        help="Optional path to SQLite analytics database.",
+    )
+    parser.add_argument(
+        "--snapshot-interval",
+        type=float,
+        default=None,
+        metavar="SECONDS",
+        help="Seconds between zone-occupancy snapshots written to the DB.",
+    )
+    return parser.parse_args()
+
+
+def load_thresholds(
+    threshold_path: Path,
+    zone_manager: ZoneManager,
+    *,
+    threshold_profile: str | None = None,
+) -> dict[str, ZoneAlertThresholds]:
+    """Load crowd alert thresholds by zone with fallback to zone config defaults."""
+    parsed: dict[str, Any] = {}
+    if threshold_path.exists():
+        loaded = yaml.safe_load(threshold_path.read_text(encoding="utf-8")) or {}
+        if isinstance(loaded, dict):
+            parsed = loaded
+
+    threshold_root = parsed.get("thresholds", {}) if isinstance(parsed, dict) else {}
+    default_thresholds = threshold_root.get("default", {}) if isinstance(threshold_root, dict) else {}
+    zones_thresholds = threshold_root.get("zones", {}) if isinstance(threshold_root, dict) else {}
+    profiles = parsed.get("profiles", {}) if isinstance(parsed, dict) else {}
+    selected_profile = profiles.get(threshold_profile or "", {}) if isinstance(profiles, dict) else {}
+
+    default_warning = int(default_thresholds.get("warning_count", default_thresholds.get("crowd_count", 20)))
+    default_critical = int(default_thresholds.get("critical_count", default_thresholds.get("critical_count", 30)))
+    default_dwell = float(default_thresholds.get("dwell_seconds", default_thresholds.get("crowd_dwell_seconds", 0.0)))
+    default_clear = int(default_thresholds.get("clear_below_count", 0))
+
+    by_zone: dict[str, ZoneAlertThresholds] = {}
+    for zone in zone_manager.zones:
+        zone_thresholds = zones_thresholds.get(zone.id, {}) if isinstance(zones_thresholds, dict) else {}
+        profile_thresholds = selected_profile.get(zone.id, {}) if isinstance(selected_profile, dict) else {}
+        combined = {**zone_thresholds, **profile_thresholds}
+        warning = int(combined.get("warning_count", zone.warning_threshold or default_warning))
+        critical = int(combined.get("critical_count", zone.critical_threshold or default_critical))
+        warning = max(0, warning)
+        critical = max(warning, critical)
+        by_zone[zone.id] = ZoneAlertThresholds(
+            warning=warning,
+            critical=critical,
+            dwell_seconds=float(combined.get("dwell_seconds", combined.get("crowd_dwell_seconds", default_dwell))),
+            clear_below_count=int(combined.get("clear_below_count", default_clear)),
+        )
+    return by_zone
+
+
+def _scale_point(point: tuple[float, float], scale_x: float, scale_y: float) -> tuple[float, float]:
+    return (point[0] * scale_x, point[1] * scale_y)
+
+
+def load_zone_and_line_managers(
+    zones_config_path: Path,
+    *,
+    target_width: int | None = None,
+    target_height: int | None = None,
+) -> tuple[ZoneManager, list[LineManager]]:
+    """Load zone and line configuration managers from one JSON file."""
+    if not zones_config_path.exists():
+        raise FileNotFoundError(f"Zones config not found: {zones_config_path}")
+
+    raw = json.loads(zones_config_path.read_text(encoding="utf-8"))
+    if not isinstance(raw, dict):
+        raise ValueError(f"Invalid zones config format: {zones_config_path}")
+
+    ref_width = int(raw.get("frame_width", target_width or 0) or 0)
+    ref_height = int(raw.get("frame_height", target_height or 0) or 0)
+    scale_x = (target_width / ref_width) if target_width and ref_width else 1.0
+    scale_y = (target_height / ref_height) if target_height and ref_height else 1.0
+
+    zones_raw = raw.get("zones", [])
+    if not isinstance(zones_raw, list):
+        raise ValueError("Config field 'zones' must be a list.")
+    zone_configs: list[ZoneConfig] = []
+    for zone in zones_raw:
+        if not isinstance(zone, dict):
+            raise ValueError("Each zone entry must be an object.")
+        zone_copy = copy.deepcopy(zone)
+        if scale_x != 1.0 or scale_y != 1.0:
+            zone_copy["polygon"] = [
+                [point[0] * scale_x, point[1] * scale_y] for point in zone_copy.get("polygon", [])
+            ]
+        zone_configs.append(ZoneConfig.from_dict(zone_copy))
+    zone_manager = ZoneManager(zones=zone_configs)
+
+    lines_raw = raw.get("lines", [])
+    if not isinstance(lines_raw, list):
+        raise ValueError("Config field 'lines' must be a list.")
+    line_managers: list[LineManager] = []
+    for idx, line in enumerate(lines_raw):
+        if not isinstance(line, dict):
+            raise ValueError(f"Line entry at index {idx} must be an object.")
+        start_raw = line.get("start")
+        end_raw = line.get("end")
+        if not isinstance(start_raw, list | tuple) or len(start_raw) != 2:
+            raise ValueError(f"Invalid line start for line index {idx}: {start_raw!r}")
+        if not isinstance(end_raw, list | tuple) or len(end_raw) != 2:
+            raise ValueError(f"Invalid line end for line index {idx}: {end_raw!r}")
+        start = (float(start_raw[0]), float(start_raw[1]))
+        end = (float(end_raw[0]), float(end_raw[1]))
+        if scale_x != 1.0 or scale_y != 1.0:
+            start = _scale_point(start, scale_x, scale_y)
+            end = _scale_point(end, scale_x, scale_y)
+        line_managers.append(
+            LineManager(
+                config=LineConfig(
+                    id=str(line.get("id") or line.get("name") or f"line_{idx + 1}"),
+                    name=str(line.get("name") or line.get("id") or f"line_{idx + 1}"),
+                    start=start,
+                    end=end,
+                    in_label=str(line.get("in_label", "IN")),
+                    out_label=str(line.get("out_label", "OUT")),
+                )
+            )
+        )
+    return zone_manager, line_managers
+
+
+def print_source_help(source: str | int) -> None:
+    """Print actionable guidance when source is invalid or unavailable."""
+    print(f"Unable to open source: {redact_source_uri(source)}")
+    if str(source) == "data/input_videos/sample.mp4":
+        print("No sample video found at data/input_videos/sample.mp4.")
+        print("Please add a sample video file there, or pass --source with another path.")
+    print("Provide one of the following:")
+    print("  1) Existing video file path")
+    print("  2) Webcam index (e.g. --source 0)")
+    print('  3) RTSP/HTTP URL (prefer --source "$CAM1_RTSP_URL" or configs/cameras.yaml env placeholders)')
+
+
+def resolve_runtime_args(args: argparse.Namespace, settings: AppSettings, camera: CameraSettings | None) -> dict[str, Any]:
+    """Resolve effective runtime settings from config, camera, and CLI overrides."""
+    source = parse_source_value(args.source) if args.source is not None else None
+    source = source if source is not None else (camera.source if camera is not None else "data/input_videos/sample.mp4")
+    source_type = args.source_type or (camera.source_type if camera is not None else None)
+    source_type = source_type or infer_source_type(source)
+    camera_id = args.camera_id or (camera.camera_id if camera is not None else infer_camera_id(source, source_type))
+    store_output_video = camera.store_output_video if camera is not None else True
+    if args.output is not None:
+        store_output_video = True
+    output = args.output or settings.outputs.default_output_video
+    zones_config = args.zones_config or Path(camera.zones_config if camera is not None else "configs/zones.example.json")
+    max_fps = args.max_fps if args.max_fps is not None else (
+        camera.fps_limit if camera is not None and camera.fps_limit is not None else settings.runtime.max_fps
+    )
+    frame_stride = args.frame_stride if args.frame_stride is not None else (
+        camera.frame_stride if camera is not None and camera.frame_stride is not None else settings.runtime.frame_stride
+    )
+    snapshot_interval = (
+        args.snapshot_interval
+        if args.snapshot_interval is not None
+        else settings.persistence.snapshot_interval_seconds
+    )
+    return {
+        "source": source,
+        "source_type": source_type,
+        "output": output,
+        "zones_config": Path(zones_config),
+        "model": args.model or settings.model.weights,
+        "confidence": float(args.confidence if args.confidence is not None else settings.model.confidence),
+        "device": args.device or settings.model.device,
+        "tracker_type": args.tracker or settings.tracker.type,
+        "db": args.db,
+        "camera_id": camera_id,
+        "camera_name": camera.name if camera is not None else camera_id,
+        "camera_description": camera.description if camera is not None else "",
+        "threshold_profile": camera.threshold_profile if camera is not None else None,
+        "snapshot_interval": float(snapshot_interval),
+        "max_fps": float(max_fps or 0.0),
+        "frame_stride": int(frame_stride),
+        "resize_width": args.resize_width if args.resize_width is not None else settings.runtime.resize_width,
+        "store_output_video": store_output_video,
+    }
+
+
+def build_models(settings: AppSettings, *, model: str, confidence: float, device: str, tracker_type: str) -> tuple[Detector, Tracker]:
+    """Build detector and tracker from settings and overrides."""
+    detector = Detector(
+        weights_path=model,
+        device=device,
+        confidence=confidence,
+        iou=settings.model.iou,
+        person_class_id=settings.model.person_class_id,
+        imgsz=settings.model.imgsz,
+        half=settings.model.half,
+        accuracy_weights=settings.model.accuracy_weights,
+        legacy_fallback_weights=settings.model.legacy_fallback_weights,
+        use_fine_tuned_if_available=settings.model.use_fine_tuned_if_available,
+    )
+    tracker = Tracker(
+        tracker_type=tracker_type,
+        weights_path=model,
+        device=device,
+        confidence=confidence,
+        iou=settings.model.iou,
+        person_class_id=settings.model.person_class_id,
+        imgsz=settings.model.imgsz,
+        half=settings.model.half,
+        tracker_config_overrides=settings.tracker.config_overrides,
+        accuracy_weights=settings.model.accuracy_weights,
+        legacy_fallback_weights=settings.model.legacy_fallback_weights,
+        use_fine_tuned_if_available=settings.model.use_fine_tuned_if_available,
+    )
+    return detector, tracker
+
+
+def run_pipeline(args: argparse.Namespace) -> int:
+    """Run end-to-end stream read -> process -> annotate -> write pipeline."""
+    settings = load_app_settings(args.config)
+    cameras = load_camera_settings(args.camera_config) if args.camera_config.exists() else {}
+    if args.camera_id:
+        camera = choose_camera(cameras, args.camera_id)
+        if camera is None:
+            known = ", ".join(sorted(cameras)) or "(none configured)"
+            print(f"Camera '{args.camera_id}' not found in {args.camera_config}. Known cameras: {known}")
+            return 1
+    elif args.source is None:
+        camera = choose_camera(cameras)
+    else:
+        # Explicit sources are ad-hoc unless the caller names a configured camera.
+        camera = None
+    effective = resolve_runtime_args(args, settings, camera)
+
+    reader = StreamReader(
+        source=effective["source"],
+        source_type=effective["source_type"],
+        frame_stride=effective["frame_stride"],
+        max_fps=effective["max_fps"],
+        reconnect_backoff_seconds=settings.runtime.reconnect_backoff_seconds,
+        max_reconnect_attempts=settings.runtime.max_reconnect_attempts,
+        read_timeout_seconds=settings.runtime.stream_read_timeout_seconds,
+        camera_id=effective["camera_id"],
+    )
+
+    if not reader.source_exists():
+        print_source_help(effective["source"])
+        return 1
+
+    reader.open()
+    if not reader.is_opened():
+        print_source_help(effective["source"])
+        return 1
+
+    source_width = int(reader.capture.get(cv2.CAP_PROP_FRAME_WIDTH) or 0) if reader.capture else 0
+    source_height = int(reader.capture.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0) if reader.capture else 0
+    target_width = effective["resize_width"] if effective["resize_width"] else source_width or None
+    target_height = None
+    if target_width and source_width and source_height:
+        target_height = int(source_height * (target_width / float(source_width)))
+
+    try:
+        zone_manager, line_managers = load_zone_and_line_managers(
+            effective["zones_config"],
+            target_width=target_width,
+            target_height=target_height,
+        )
+    except (FileNotFoundError, ValueError, KeyError, TypeError) as error:
+        print(f"Zone/line config load failed: {error}")
+        reader.release()
+        return 1
+
+    thresholds_by_zone = load_thresholds(
+        Path("configs/thresholds.yaml"),
+        zone_manager,
+        threshold_profile=effective["threshold_profile"],
+    )
+    crowd_analyzer = CrowdAnalyzer(thresholds_by_zone=thresholds_by_zone)
+
+    try:
+        detector, tracker = build_models(
+            settings,
+            model=effective["model"],
+            confidence=effective["confidence"],
+            device=effective["device"],
+            tracker_type=effective["tracker_type"],
+        )
+    except RuntimeError as error:
+        print(f"Model initialization failed: {error}")
+        reader.release()
+        return 1
+
+    processor = FrameProcessor(
+        detector=detector,
+        tracker=tracker,
+        zone_manager=zone_manager,
+        line_managers=line_managers,
+        crowd_analyzer=crowd_analyzer,
+        use_tracking=True,
+        resize_width=effective["resize_width"],
+    )
+
+    analytics_logger = None
+    if effective["db"]:
+        from src.analytics.event_logger import AnalyticsLogger
+
+        db_url = f"sqlite:///{Path(effective['db']).resolve()}"
+        Path(effective["db"]).parent.mkdir(parents=True, exist_ok=True)
+        analytics_logger = AnalyticsLogger(
+            db_url=db_url,
+            camera_id=effective["camera_id"] or "camera",
+            snapshot_interval_secs=effective["snapshot_interval"],
+        )
+        analytics_logger.register_camera(
+            camera_name=effective["camera_name"],
+            source_type=reader.source_type,
+            description=effective["camera_description"],
+            zones_config_path=str(effective["zones_config"]),
+            enabled=True,
+        )
+        session_id = analytics_logger.start_session(
+            source=redact_source_uri(effective["source"]),
+            source_type=reader.source_type,
+            model_weights=effective["model"],
+            tracker_type=effective["tracker_type"],
+            zones_config_path=str(effective["zones_config"]),
+        )
+        print(f"Analytics logging to: {effective['db']}  (session_id={session_id})")
+
+    writer = VideoWriter(output_path=effective["output"]) if effective["store_output_video"] else None
+    source_fps = reader.estimated_fps()
+    if writer is not None:
+        writer.set_fps(source_fps if source_fps > 0 else 20.0)
+
+    processed = 0
+    last_status: tuple[int, int] = (-1, -1)
+    total_unique_passengers = 0
+    try:
+        for frame in reader.frames():
+            result = processor.process(
+                frame=frame.data,
+                frame_index=frame.index,
+                timestamp=frame.timestamp,
+            )
+            total_unique_passengers = result.unique_passengers_seen
+            if analytics_logger is not None:
+                track_ids = [
+                    detection.track_id
+                    for detection in result.detections
+                    if detection.track_id is not None
+                ]
+                analytics_logger.log_frame(
+                    frame_index=frame.index,
+                    source_timestamp=frame.source_timestamp,
+                    total_detections=len(result.detections),
+                    zone_occupancy=result.zone_occupancy,
+                    zone_alerts=result.zone_alerts,
+                    line_counts=result.line_counts,
+                    line_events=result.line_events,
+                    track_ids=[track_id for track_id in track_ids if track_id is not None],
+                    processing_fps=result.processing_fps,
+                    source_type=frame.source_type,
+                    reconnect_count=frame.reconnect_count,
+                    dropped_frames=frame.dropped_frames,
+                )
+                status_key = (frame.reconnect_count, frame.dropped_frames)
+                if status_key != last_status and (frame.reconnect_count > 0 or frame.dropped_frames > 0):
+                    analytics_logger.log_stream_health(
+                        status="streaming",
+                        reconnect_count=frame.reconnect_count,
+                        dropped_frames=frame.dropped_frames,
+                        message="live stream counters updated",
+                    )
+                    last_status = status_key
+
+            annotated = annotate_frame(
+                frame=result.frame,
+                detections=result.detections,
+                zone_manager=zone_manager,
+                line_managers=line_managers,
+                zone_occupancy=result.zone_occupancy,
+                zone_alerts=result.zone_alerts,
+                line_counts=result.line_counts,
+                overlays={
+                    "camera": effective["camera_id"] or effective["camera_name"],
+                    "source": reader.source_type,
+                    "frame": frame.index,
+                    "tracks": len(result.detections),
+                    "unique": result.unique_passengers_seen,
+                    "fps": f"{result.processing_fps:.2f}",
+                    "reconnects": frame.reconnect_count,
+                },
+            )
+            if writer is not None:
+                writer.write(annotated)
+            if args.show:
+                cv2.imshow("Crowd Analytics Demo", annotated)
+                if (cv2.waitKey(1) & 0xFF) == ord("q"):
+                    break
+            processed += 1
+    finally:
+        reader.release()
+        if writer is not None:
+            writer.close()
+        if args.show:
+            cv2.destroyAllWindows()
+        if analytics_logger is not None:
+            analytics_logger.end_session(
+                total_frames=processed,
+                total_unique_passengers=total_unique_passengers,
+            )
+
+    if processed == 0:
+        print_source_help(effective["source"])
+        return 1
+
+    print(f"Processed {processed} frames.")
+    if writer is not None:
+        print(f"Annotated output saved to: {effective['output']}")
+    else:
+        print("Annotated output video disabled by camera privacy config.")
+    return 0
+
+
+def main() -> None:
+    """Run script entrypoint and return helpful errors on failure."""
+    args = parse_args()
+    exit_code = run_pipeline(args)
+    if exit_code != 0:
+        raise SystemExit(exit_code)
+
+
+if __name__ == "__main__":
+    main()

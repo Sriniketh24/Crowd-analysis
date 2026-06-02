@@ -1,0 +1,11 @@
+# Placeholder YOLO dataset config.
+# Replace the paths below after labeling frames exported in YOLO format.
+# The training script will refuse to run until the expected labeled dataset exists.
+
+path: data/training_dataset
+train: images/train
+val: images/val
+test: images/test
+
+names:
+  0: person

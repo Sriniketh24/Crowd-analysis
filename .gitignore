@@ -1,0 +1,61 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+.eggs/
+*.egg-info/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Testing and tooling
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Env files
+.env
+.env.*
+!.env.example
+
+# Data and outputs
+data/outputs/*
+!data/outputs/.gitkeep
+data/input_videos/*
+!data/input_videos/.gitkeep
+data/sample_frames/*
+!data/sample_frames/.gitkeep
+data/head_datasets/
+data/indian_railway_videos/
+
+# Model weights and artifacts
+models/*.pt
+models/*.onnx
+models/*.engine
+*.pt
+*.onnx
+*.engine
+
+# SQLite and logs
+*.db
+*.sqlite
+*.sqlite3
+*.log
+
+# OS/editor
+.DS_Store
+.vscode/
+.idea/
+
+# Local assistant/tooling state
+.claude/
+.claude-flow/
+_cleanup_backup/

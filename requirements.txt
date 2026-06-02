@@ -1,0 +1,15 @@
+fastapi
+uvicorn[standard]
+streamlit
+ultralytics
+lap
+opencv-python
+supervision
+numpy
+pandas
+pydantic
+pyyaml
+python-dotenv
+sqlalchemy
+pytest
+httpx

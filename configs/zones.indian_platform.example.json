@@ -1,0 +1,56 @@
+{
+  "camera_id": "station_rtsp_example",
+  "frame_width": 1280,
+  "frame_height": 720,
+  "_note": "Template for an Indian railway platform CCTV view. Recalibrate all coordinates for your actual camera before use.",
+  "zones": [
+    {
+      "id": "platform_waiting_area",
+      "name": "Platform Waiting Area",
+      "polygon": [[90, 240], [1020, 240], [1080, 620], [120, 660]],
+      "warning_threshold": 15,
+      "critical_threshold": 24
+    },
+    {
+      "id": "platform_edge_yellow_line",
+      "name": "Platform Edge Safety Zone",
+      "polygon": [[1040, 180], [1235, 200], [1255, 640], [1085, 620]],
+      "warning_threshold": 6,
+      "critical_threshold": 10
+    },
+    {
+      "id": "footbridge_entry",
+      "name": "Footbridge Stair Entry",
+      "polygon": [[0, 80], [260, 80], [310, 320], [0, 340]],
+      "warning_threshold": 8,
+      "critical_threshold": 14
+    },
+    {
+      "id": "boarding_area",
+      "name": "Boarding Area",
+      "polygon": [[760, 250], [1220, 250], [1260, 520], [830, 520]],
+      "warning_threshold": 10,
+      "critical_threshold": 18
+    }
+  ],
+  "lines": [
+    {
+      "id": "entry_exit_flow",
+      "name": "Entry Exit Flow",
+      "start": [420, 170],
+      "end": [460, 690],
+      "in_label": "IN",
+      "out_label": "OUT",
+      "direction_hint": "Left-to-right crossing counts as IN."
+    },
+    {
+      "id": "stairs_flow",
+      "name": "Staircase Flow",
+      "start": [255, 100],
+      "end": [320, 355],
+      "in_label": "UP",
+      "out_label": "DOWN",
+      "direction_hint": "Movement toward the platform counts as DOWN."
+    }
+  ]
+}

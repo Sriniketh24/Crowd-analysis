@@ -1,0 +1,30 @@
+cameras:
+  - id: demo_platform
+    name: Mumbai Platform Demo
+    description: Public Mumbai suburban railway platform clip used for local demo runs.
+    enabled: true
+    source: data/input_videos/sample.mp4
+    source_type: file
+    frame_width: 1920
+    frame_height: 1080
+    zones_config: configs/zones.example.json
+    threshold_profile: platform_waiting_area
+    fps_limit: 0
+    frame_stride: 1
+    privacy:
+      store_output_video: true
+
+  - id: station_rtsp_example
+    name: Station RTSP Example
+    description: Example live camera entry. Supply credentials through environment variables only.
+    enabled: false
+    source: ${CAM1_RTSP_URL}
+    source_type: rtsp
+    frame_width: 1280
+    frame_height: 720
+    zones_config: configs/zones.indian_platform.example.json
+    threshold_profile: platform_edge
+    fps_limit: 12
+    frame_stride: 2
+    privacy:
+      store_output_video: false

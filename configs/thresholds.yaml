@@ -1,0 +1,44 @@
+thresholds:
+  default:
+    warning_count: 20
+    critical_count: 30
+    dwell_seconds: 3
+    clear_below_count: 20
+
+  zones:
+    platform_zone:
+      warning_count: 5
+      critical_count: 10
+      dwell_seconds: 3
+      clear_below_count: 4
+    concourse_zone:
+      warning_count: 3
+      critical_count: 6
+      dwell_seconds: 2
+      clear_below_count: 2
+
+profiles:
+  platform_waiting_area:
+    platform_zone:
+      warning_count: 10
+      critical_count: 18
+      dwell_seconds: 3
+      clear_below_count: 8
+  platform_edge:
+    platform_edge_yellow_line:
+      warning_count: 6
+      critical_count: 10
+      dwell_seconds: 2
+      clear_below_count: 4
+  stairs:
+    footbridge_entry:
+      warning_count: 8
+      critical_count: 14
+      dwell_seconds: 2
+      clear_below_count: 5
+  concourse:
+    concourse_flow_area:
+      warning_count: 12
+      critical_count: 20
+      dwell_seconds: 3
+      clear_below_count: 9

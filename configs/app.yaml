@@ -1,0 +1,53 @@
+app:
+  name: railway-crowd-analytics
+  environment: development
+  log_level: INFO
+
+model:
+  weights: yolo11n.pt
+  accuracy_weights: yolo11s.pt
+  legacy_fallback_weights: yolov8n.pt
+  device: cpu
+  confidence: 0.35
+  iou: 0.5
+  person_class_id: 0
+  imgsz: 640
+  half: false
+  profile: cpu_demo
+  use_fine_tuned_if_available: true
+
+tracker:
+  type: bytetrack
+  track_activation_threshold: 0.25
+  lost_track_buffer: 30
+  minimum_matching_threshold: 0.8
+  config_overrides:
+    track_low_thresh: 0.10
+    fuse_score: true
+
+persistence:
+  db_url: sqlite:///data/outputs/analytics.db
+  snapshot_interval_seconds: 5.0
+
+runtime:
+  frame_stride: 1
+  max_fps: 0.0
+  resize_width:
+  reconnect_backoff_seconds: 2.0
+  max_reconnect_attempts: 3
+  stream_read_timeout_seconds: 15.0
+
+privacy:
+  store_raw_frames: false
+
+api:
+  host: 0.0.0.0
+  port: 8000
+
+dashboard:
+  host: 0.0.0.0
+  port: 8501
+
+outputs:
+  default_output_video: data/outputs/demo.mp4
+  default_report_csv: data/outputs/report.csv
