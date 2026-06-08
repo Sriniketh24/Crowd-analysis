@@ -18,6 +18,7 @@ from src.analytics.database import (
     init_db,
 )
 from src.vision.line_counter import LineCrossing
+from src.vision.detector import normalize_detector_mode
 
 
 class AnalyticsLogger:
@@ -28,9 +29,11 @@ class AnalyticsLogger:
         db_url: str,
         camera_id: str,
         snapshot_interval_secs: float = 5.0,
+        detector_mode: str = "body",
     ) -> None:
         self._camera_id = camera_id
         self._snapshot_interval = snapshot_interval_secs
+        self._detector_mode = normalize_detector_mode(detector_mode)
 
         engine = init_db(db_url)
         self._Session = get_session_factory(engine)
@@ -75,16 +78,20 @@ class AnalyticsLogger:
         *,
         source_type: str = "file",
         model_weights: str | None = None,
+        detector_mode: str | None = None,
         tracker_type: str | None = None,
         zones_config_path: str | None = None,
     ) -> int:
         """Open a new run session and return its database ID."""
+        if detector_mode is not None:
+            self._detector_mode = normalize_detector_mode(detector_mode)
         with db_session(self._Session) as session:
             run = RunSession(
                 camera_id=self._camera_id,
                 source=source,
                 source_type=source_type,
                 model_weights=model_weights,
+                detector_mode=self._detector_mode,
                 tracker_type=tracker_type,
                 zones_config_path=zones_config_path,
                 started_at=datetime.now(timezone.utc),
@@ -159,10 +166,12 @@ class AnalyticsLogger:
         source_type: str = "file",
         reconnect_count: int = 0,
         dropped_frames: int = 0,
+        detector_mode: str | None = None,
     ) -> None:
         """Log one processed frame and derived analytics events."""
         if self._run_session_id is None:
             raise RuntimeError("call start_session() before log_frame()")
+        mode = normalize_detector_mode(detector_mode or self._detector_mode)
 
         now = datetime.now(timezone.utc)
         rows: list = []
@@ -176,6 +185,7 @@ class AnalyticsLogger:
                 frame_index=frame_index,
                 source_timestamp=source_timestamp,
                 source_type=source_type,
+                detector_mode=mode,
                 recorded_at=now,
                 total_detections=total_detections,
                 tracked_objects=len(valid_track_ids),
@@ -193,6 +203,7 @@ class AnalyticsLogger:
                     ZoneOccupancy(
                         run_session_id=self._run_session_id,
                         camera_id=self._camera_id,
+                        detector_mode=mode,
                         zone_id=zone_id,
                         frame_index=frame_index,
                         count=count,
@@ -207,6 +218,7 @@ class AnalyticsLogger:
                 LineCrossingEvent(
                     run_session_id=self._run_session_id,
                     camera_id=self._camera_id,
+                    detector_mode=mode,
                     line_id=event.line_id,
                     line_name=event.line_name,
                     track_id=event.track_id,
@@ -223,6 +235,7 @@ class AnalyticsLogger:
                     CrowdAlert(
                         run_session_id=self._run_session_id,
                         camera_id=self._camera_id,
+                        detector_mode=mode,
                         zone_id=zone_id,
                         alert_level=level,
                         occupancy=zone_occupancy.get(zone_id, 0),

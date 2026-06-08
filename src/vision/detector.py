@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 from time import time
+from typing import Literal
 
 try:
     from ultralytics import YOLO
@@ -14,6 +15,32 @@ except ModuleNotFoundError:  # pragma: no cover - environment-specific dependenc
 DEFAULT_MODEL_CANDIDATES: tuple[str, ...] = ("yolo11s.pt", "yolo11n.pt", "yolov8n.pt")
 DEFAULT_PERSON_CLASS_ID = 0
 FINE_TUNED_MODEL_PATH = Path("models/fine_tuned/best.pt")
+DEFAULT_HEAD_MODEL_PATH = Path("models/fine_tuned/head_detector/weights/best.pt")
+DetectorMode = Literal["body", "head"]
+
+
+def normalize_detector_mode(detector_mode: str) -> DetectorMode:
+    """Validate and normalize detector mode strings."""
+    normalized = detector_mode.strip().lower()
+    if normalized not in {"body", "head"}:
+        raise ValueError("detector_mode must be either 'body' or 'head'")
+    return normalized  # type: ignore[return-value]
+
+
+def default_model_for_mode(detector_mode: str, configured_body_model: str | None = None) -> str:
+    """Return the default model path/name for a detector mode."""
+    mode = normalize_detector_mode(detector_mode)
+    if mode == "head":
+        return str(DEFAULT_HEAD_MODEL_PATH)
+    return configured_body_model or DEFAULT_MODEL_CANDIDATES[1]
+
+
+def class_name_for_mode(detector_mode: str, model_class_name: str | None = None) -> str:
+    """Return the label exposed to analytics and overlays for a detector mode."""
+    mode = normalize_detector_mode(detector_mode)
+    if mode == "head":
+        return "head/passenger"
+    return "person/passenger" if model_class_name in (None, "", "person") else model_class_name
 
 
 @dataclass(slots=True)
@@ -26,6 +53,7 @@ class NormalizedDetection:
     class_name: str
     frame_index: int
     timestamp: float
+    detector_mode: DetectorMode = "body"
 
 
 @dataclass(slots=True)
@@ -109,19 +137,27 @@ class Detector:
         iou: float = 0.5,
         person_class_id: int = DEFAULT_PERSON_CLASS_ID,
         imgsz: int = 640,
+        augment: bool = False,
+        max_det: int = 300,
         half: bool = False,
         accuracy_weights: str | None = None,
         legacy_fallback_weights: str | None = None,
         use_fine_tuned_if_available: bool = True,
+        detector_mode: str = "body",
+        class_name_override: str | None = None,
     ) -> None:
         """Initialize the detector with model and inference parameters."""
+        self.detector_mode = normalize_detector_mode(detector_mode)
         self.device = device
         self.confidence = confidence
         self.iou = iou
         self.person_class_id = person_class_id
         self.imgsz = imgsz
+        self.augment = augment
+        self.max_det = max_det
         self.half = half
         self.weights_path = weights_path
+        self.class_name_override = class_name_override
         self.model = build_model(
             weights_path,
             accuracy_weights=accuracy_weights,
@@ -144,6 +180,8 @@ class Detector:
             classes=[self.person_class_id],
             device=self.device,
             imgsz=self.imgsz,
+            augment=self.augment,
+            max_det=self.max_det,
             half=self.half,
             verbose=False,
         )
@@ -162,7 +200,10 @@ class Detector:
             if class_id != self.person_class_id:
                 continue
             x1, y1, x2, y2 = (float(value) for value in box.xyxy[0].tolist())
-            class_name = str(names.get(class_id, "person"))
+            class_name = self.class_name_override or class_name_for_mode(
+                self.detector_mode,
+                str(names.get(class_id, "person")),
+            )
             normalized.append(
                 NormalizedDetection(
                     track_id=None,
@@ -171,6 +212,7 @@ class Detector:
                     class_name=class_name,
                     frame_index=frame_index,
                     timestamp=frame_ts,
+                    detector_mode=self.detector_mode,
                 )
             )
         return DetectionResult(detections=normalized)

@@ -19,6 +19,8 @@ from src.vision.detector import (
     DEFAULT_PERSON_CLASS_ID,
     NormalizedDetection,
     build_model,
+    class_name_for_mode,
+    normalize_detector_mode,
 )
 
 SUPPORTED_TRACKERS = {"bytetrack", "botsort"}
@@ -34,6 +36,7 @@ class TrackedObject:
     class_name: str
     frame_index: int
     timestamp: float
+    detector_mode: str = "body"
 
 
 @dataclass(slots=True)
@@ -56,11 +59,15 @@ class Tracker:
         iou: float = 0.5,
         person_class_id: int = DEFAULT_PERSON_CLASS_ID,
         imgsz: int = 640,
+        augment: bool = False,
+        max_det: int = 300,
         half: bool = False,
         tracker_config_overrides: dict[str, Any] | None = None,
         accuracy_weights: str | None = None,
         legacy_fallback_weights: str | None = None,
         use_fine_tuned_if_available: bool = True,
+        detector_mode: str = "body",
+        class_name_override: str | None = None,
     ) -> None:
         """Initialize tracking model and tracker mode."""
         if tracker_type not in SUPPORTED_TRACKERS:
@@ -68,6 +75,7 @@ class Tracker:
                 f"Unsupported tracker type '{tracker_type}'. "
                 f"Expected one of: {', '.join(sorted(SUPPORTED_TRACKERS))}"
             )
+        self.detector_mode = normalize_detector_mode(detector_mode)
         self.tracker_type = tracker_type
         self.model = build_model(
             weights_path,
@@ -80,7 +88,10 @@ class Tracker:
         self.iou = iou
         self.person_class_id = person_class_id
         self.imgsz = imgsz
+        self.augment = augment
+        self.max_det = max_det
         self.half = half
+        self.class_name_override = class_name_override
         self._tracker_config_overrides = dict(tracker_config_overrides or {})
         self._tracker_config_path = self._build_tracker_config()
         self.diagnostics = LineageDiagnostics(
@@ -120,6 +131,8 @@ class Tracker:
             persist=True,
             device=self.device,
             imgsz=self.imgsz,
+            augment=self.augment,
+            max_det=self.max_det,
             half=self.half,
             verbose=False,
         )
@@ -147,9 +160,13 @@ class Tracker:
                     track_id=track_id,
                     bbox=(x1, y1, x2, y2),
                     confidence=float(box.conf.item()),
-                    class_name=str(names.get(class_id, "person")),
+                    class_name=self.class_name_override or class_name_for_mode(
+                        self.detector_mode,
+                        str(names.get(class_id, "person")),
+                    ),
                     frame_index=frame_index,
                     timestamp=frame_ts,
+                    detector_mode=self.detector_mode,
                 )
             )
         return tracks
@@ -174,6 +191,7 @@ def normalize_tracks(tracks: list[TrackedObject]) -> list[NormalizedDetection]:
             class_name=track.class_name,
             frame_index=track.frame_index,
             timestamp=track.timestamp,
+            detector_mode=normalize_detector_mode(track.detector_mode),
         )
         for track in tracks
     ]

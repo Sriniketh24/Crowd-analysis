@@ -40,19 +40,21 @@ benchmark that is **railway-platform-focused**, ships **real head bounding boxes
 | Raw path | `data/head_datasets/raw/rpee_heads/` |
 | YOLO path | `data/head_datasets/yolo/rpee_heads/` (`images/{train,val}`, `labels/{train,val}`) |
 | Prep script | `scripts/prepare_head_dataset.py --dataset rpee_heads` |
-| Config YAML | `configs/head_dataset.yaml` (single class `0 = head`) |
+| Config YAML | `configs/head_dataset.yaml` (RPEE only, single class `0 = head`) |
 
-**Backup head datasets considered** (only used if RPEE-Heads is unavailable; RPEE-Heads
-remains preferred):
+**Supplemental head datasets considered** (only mixed in after RPEE-Heads if a measured
+accuracy gap needs more occlusion/head-variety data; RPEE-Heads remains primary):
 
-| Dataset | Head boxes? | Format | Note |
-|---------|-------------|--------|------|
-| CrowdHuman | Yes (head + body) | ODGT/JSON | best for occlusion hardening; web images, not CCTV |
-| SCUT-HEAD | Yes | Pascal-VOC XML | overhead classroom/surveillance heads; converter implemented in prep script |
-| Brainwash | Yes | idl/text | true fixed-camera surveillance, **original host removed over consent concerns** — restricted |
+| Dataset | Head boxes? | Format | Source / license note | Prep command |
+|---------|-------------|--------|-----------------------|--------------|
+| CrowdHuman | Yes (`hbox` head boxes + body boxes) | ODGT/JSON lines | Source: https://www.crowdhuman.org/ · cite Shao et al. 2018 · intended for academic/research use; verify exact terms before commercial use or redistribution | `python3 scripts/prepare_head_dataset.py --dataset crowdhuman_heads --raw-dir data/head_datasets/raw/crowdhuman --out-dir data/head_datasets/yolo/crowdhuman_heads` |
+| SCUT-HEAD | Yes | Pascal-VOC XML | Source: https://github.com/HCIILAB/SCUT-HEAD-Dataset-Release · free to the academic community for research purpose usage only | `python3 scripts/prepare_head_dataset.py --dataset scut_head --raw-dir data/head_datasets/raw/scut_head --out-dir data/head_datasets/yolo/scut_head` |
+| Brainwash | Yes | idl/text | true fixed-camera surveillance, **original host removed over consent concerns** — restricted; do not use unless a legitimate source and terms are verified | n/a |
 
-> Only RPEE-Heads is prepared by default. The backup converters run **only** if their raw
-> files are physically present — the script never fabricates labels.
+> Only RPEE-Heads is prepared by default. CrowdHuman and SCUT-HEAD are supplemental.
+> Their converters run **only** if raw files are physically present — the script never
+> downloads data or fabricates labels. Use `configs/head_dataset_mixed.example.yaml`
+> only after preparing the supplemental YOLO folders locally.
 
 ---
 
@@ -60,12 +62,14 @@ remains preferred):
 
 | Path | What it is | Real? | Indian railway? | Labeled? |
 |------|-----------|-------|-----------------|----------|
-| `data/input_videos/sample.mp4` | 20 s demo trim of the Mumbai local platform clip (1080p, 30fps) | ✅ | ✅ Mumbai suburban | ❌ |
+| `data/input_videos/sample.mp4` | Selected Pexels "People on Platform on Train Station" clip, CCTV-like elevated railway platform footage (720p, 25fps) | ✅ | ❌ not Indian-specific | ❌ |
+| `data/input_videos/sample.source.json` | Source metadata for the canonical sample video | ✅ | ❌ | ❌ |
+| `data/input_videos/cctv_platform_sample.mp4` | Preserved copy of the selected Pexels sample clip | ✅ | ❌ not Indian-specific | ❌ |
 | `data/indian_railway_videos/pexels_crowded_train_station_6023186.mp4` | Full 29.4 s Mumbai local platform master | ✅ | ✅ Mumbai suburban | ❌ |
 | `data/indian_railway_videos/pexels_people_in_train_station_12899783.mp4` | Delhi Metro concourse (portrait, 27.8 s) — held-out test | ✅ | ✅ Delhi Metro | ❌ |
 | `data/indian_railway_videos/station_concourse_overhead_grayscale_PRIOR-sample.mp4` | Prior repo `sample.mp4`, overhead pedestrian concourse (non-Indian; source not documented) | ✅ | ❌ | ❌ |
 | `data/input_videos/vtest_backup.avi` | OpenCV `vtest.avi` UK campus CCTV (~6 people, 768×576) | ✅ | ❌ | ❌ |
-| `data/sample_frames/indian_railway_platform_*.jpg` | 8 frames extracted from `sample.mp4` | ✅ | ✅ | ❌ |
+| `data/sample_frames/cctv_platform_sample/` | Frames extracted from the selected Pexels sample | ✅ | ❌ not Indian-specific | ❌ |
 | `data/sample_frames/_previous_concourse_frames/` | Earlier frames from the prior concourse clip (preserved) | ✅ | ❌ | ❌ |
 
 > All videos here are **unlabeled**. None can be used for supervised fine-tuning until annotated.
@@ -75,7 +79,8 @@ remains preferred):
 ## Source links
 
 **Real Indian / station videos (unlabeled — demo/testing & labeling material):**
-- Mumbai local platform: https://www.pexels.com/video/crowded-train-station-6023186/
+- Canonical sample, Pexels "People on Platform on Train Station": https://www.pexels.com/video/people-on-platform-on-train-station-12049569/
+- Previous Mumbai local platform candidate: https://www.pexels.com/video/crowded-train-station-6023186/
 - Delhi Metro concourse: https://www.pexels.com/video/people-in-train-station-12899783/
 - Pexels "indian railway" search: https://www.pexels.com/search/videos/indian%20railway/
 - Pexels "train station" search: https://www.pexels.com/search/videos/train%20station/
@@ -95,13 +100,17 @@ remains preferred):
 
 ## Usage rules per source
 
-- **Pexels** (clips 6023186, 12899783): free to use & modify, commercial OK, no attribution
+- **Pexels** (clips 12049569, 6023186, 12899783): free to use & modify, commercial OK, no attribution
   required. Don't resell unaltered or re-upload to other stock sites. License: https://www.pexels.com/license/
 - **Pixabay**: Pixabay Content License — free, no attribution required; don't redistribute as stock.
 - **RPEE-Heads**: CC BY-SA 4.0 — attribute and share-alike if redistributed.
-- **CrowdHuman / MOT20 / WiderPerson / JHU-CROWD++ / ShanghaiTech**: academic/research use;
-  several are **non-commercial**. **Verify the exact license on each official page before any
-  commercial use or redistribution.**
+- **CrowdHuman**: official page requests citation; commonly distributed under academic/research
+  and non-commercial terms. **Verify the exact license before commercial use, redistribution,
+  or training a model for production.**
+- **SCUT-HEAD**: free to the academic community for research purpose usage only.
+- **MOT20 / WiderPerson / JHU-CROWD++ / ShanghaiTech**: academic/research use; several are
+  **non-commercial**. **Verify the exact license on each official page before any commercial
+  use or redistribution.**
 - **Roboflow Universe**: usually CC BY 4.0 — confirm on the dataset page.
 
 ---
@@ -111,8 +120,8 @@ remains preferred):
 - **Labeled (real):** CrowdHuman, MOT20, WiderPerson, JHU-CROWD++, ShanghaiTech, RPEE-Heads,
   metro/boarding CCTV datasets, Roboflow railway-crowd. → usable for fine-tuning after format
   conversion to YOLO.
-- **Unlabeled (real):** every video file currently in this repo (Mumbai, Delhi, prior concourse,
-  vtest). → demo/testing only, or annotate them first.
+- **Unlabeled (real):** every video file currently in this repo (selected Pexels platform
+  sample, Mumbai, Delhi, prior concourse, vtest). → demo/testing only, or annotate them first.
 
 ---
 

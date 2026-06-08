@@ -5,9 +5,11 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Literal
 
 BBox = tuple[float, float, float, float]
 Point = tuple[float, float]
+PointStrategy = Literal["bottom_center", "center"]
 
 
 @dataclass(slots=True)
@@ -93,6 +95,21 @@ def bottom_center_from_bbox(bbox: BBox) -> Point:
     return ((x1 + x2) / 2.0, y2)
 
 
+def center_from_bbox(bbox: BBox) -> Point:
+    """Return the center point of a bounding box."""
+    x1, y1, x2, y2 = bbox
+    return ((x1 + x2) / 2.0, (y1 + y2) / 2.0)
+
+
+def point_from_bbox(bbox: BBox, strategy: PointStrategy = "bottom_center") -> Point:
+    """Return the configured reference point for analytics counting."""
+    if strategy == "bottom_center":
+        return bottom_center_from_bbox(bbox)
+    if strategy == "center":
+        return center_from_bbox(bbox)
+    raise ValueError("point strategy must be either 'bottom_center' or 'center'")
+
+
 def _point_on_segment(point: Point, seg_start: Point, seg_end: Point) -> bool:
     """Return True if point lies exactly on a segment."""
     px, py = point
@@ -127,7 +144,12 @@ def point_in_polygon(point: Point, polygon: list[Point]) -> bool:
     return inside
 
 
-def count_zone_occupancy(tracks: list[object], zone_polygon: list[list[int]]) -> int:
+def count_zone_occupancy(
+    tracks: list[object],
+    zone_polygon: list[list[int]],
+    *,
+    point_strategy: PointStrategy = "bottom_center",
+) -> int:
     """Return people count inside a configured polygon zone."""
     polygon = [(float(x), float(y)) for x, y in zone_polygon]
     count = 0
@@ -135,7 +157,7 @@ def count_zone_occupancy(tracks: list[object], zone_polygon: list[list[int]]) ->
         bbox = extract_bbox(track)
         if bbox is None:
             continue
-        if point_in_polygon(bottom_center_from_bbox(bbox), polygon):
+        if point_in_polygon(point_from_bbox(bbox, point_strategy), polygon):
             count += 1
     return count
 
@@ -143,18 +165,30 @@ def count_zone_occupancy(tracks: list[object], zone_polygon: list[list[int]]) ->
 class ZoneManager:
     """Manage occupancy and unique IDs for configured polygon zones."""
 
-    def __init__(self, zones: list[ZoneConfig]) -> None:
+    def __init__(
+        self,
+        zones: list[ZoneConfig],
+        *,
+        point_strategy: PointStrategy = "bottom_center",
+    ) -> None:
+        point_from_bbox((0.0, 0.0, 1.0, 1.0), point_strategy)
         self.zones = zones
+        self.point_strategy = point_strategy
         self.zone_states: dict[str, ZoneState] = {
             zone.id: ZoneState(config=zone) for zone in zones
         }
 
     @classmethod
-    def load_from_file(cls, config_path: str | Path) -> "ZoneManager":
+    def load_from_file(
+        cls,
+        config_path: str | Path,
+        *,
+        point_strategy: PointStrategy = "bottom_center",
+    ) -> "ZoneManager":
         """Load zones from a JSON configuration file."""
         config = json.loads(Path(config_path).read_text(encoding="utf-8"))
         zone_configs = [ZoneConfig.from_dict(zone) for zone in config.get("zones", [])]
-        return cls(zones=zone_configs)
+        return cls(zones=zone_configs, point_strategy=point_strategy)
 
     def update(self, tracks: list[object]) -> dict[str, int]:
         """Update occupancy and unique-track counters for all zones."""
@@ -166,7 +200,7 @@ class ZoneManager:
             track_id = extract_track_id(track)
             if bbox is None or track_id is None:
                 continue
-            track_point = bottom_center_from_bbox(bbox)
+            track_point = point_from_bbox(bbox, self.point_strategy)
             for state in self.zone_states.values():
                 if point_in_polygon(track_point, state.config.polygon):
                     state.current_track_ids.add(track_id)

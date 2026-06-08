@@ -6,8 +6,8 @@ Prepared: 2026-06-02
 
 The current version is **boss-demo-ready as an MVP** for showing passenger detection,
 tracking, zone occupancy, line-crossing counts, crowded-zone alerts, SQLite logging,
-CSV export, API reads, and dashboard visualization on the public Mumbai platform
-sample video.
+CSV export, API reads, and dashboard visualization on the selected public Pexels
+railway platform sample video.
 
 It is **not production-ready** and must not be presented as validated live Indian
 Railway CCTV. It has not been tested on approved station RTSP feeds, has no measured

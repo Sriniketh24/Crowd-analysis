@@ -16,6 +16,21 @@ thresholds:
       critical_count: 6
       dwell_seconds: 2
       clear_below_count: 2
+    main_platform_waiting:
+      warning_count: 4
+      critical_count: 9
+      dwell_seconds: 0
+      clear_below_count: 2
+    platform_movement_path:
+      warning_count: 3
+      critical_count: 7
+      dwell_seconds: 0
+      clear_below_count: 1
+    train_side_edge:
+      warning_count: 2
+      critical_count: 6
+      dwell_seconds: 0
+      clear_below_count: 1
 
 profiles:
   platform_waiting_area:

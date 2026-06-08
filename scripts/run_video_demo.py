@@ -32,10 +32,17 @@ from src.video.stream_reader import StreamReader
 from src.video.video_writer import VideoWriter
 from src.vision.annotator import annotate_frame
 from src.vision.crowd_analyzer import CrowdAnalyzer, ZoneAlertThresholds
-from src.vision.detector import Detector
+from src.vision.detection_filter import DetectionRegionFilter
+from src.vision.detector import DEFAULT_HEAD_MODEL_PATH, Detector, normalize_detector_mode
 from src.vision.line_counter import LineConfig, LineManager
 from src.vision.tracker import Tracker
-from src.vision.zone_manager import ZoneConfig, ZoneManager
+from src.vision.zone_manager import PointStrategy, ZoneConfig, ZoneManager
+
+
+DETECTOR_MODE_LABELS = {
+    "body": "Full-Body Passenger Detection",
+    "head": "Head-Based Passenger Detection",
+}
 
 
 def parse_args() -> argparse.Namespace:
@@ -64,9 +71,35 @@ def parse_args() -> argparse.Namespace:
         help="Path to zone/line JSON config file.",
     )
     parser.add_argument("--model", type=str, default=None, help="YOLO model weights path or model name.")
+    parser.add_argument(
+        "--detector-mode",
+        type=str,
+        choices=["body", "head"],
+        default="body",
+        help="Detection target: body uses pretrained person detection; head uses the fine-tuned head detector.",
+    )
     parser.add_argument("--device", type=str, default=None, help="Inference device: cpu, cuda, mps, etc.")
     parser.add_argument("--tracker", type=str, default=None, choices=["bytetrack", "botsort"])
     parser.add_argument("--confidence", type=float, default=None, help="Detection confidence threshold.")
+    parser.add_argument("--iou", type=float, default=None, help="YOLO non-max suppression IoU threshold.")
+    parser.add_argument(
+        "--imgsz",
+        type=int,
+        default=None,
+        help="YOLO inference image size. Head mode benefits from larger values on CCTV-angle video.",
+    )
+    parser.add_argument(
+        "--augment",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Enable Ultralytics test-time augmentation when supported. Slower, sometimes improves recall.",
+    )
+    parser.add_argument(
+        "--max-det",
+        type=int,
+        default=None,
+        help="Maximum detections per frame. Increase for dense crowds.",
+    )
     parser.add_argument("--max-fps", type=float, default=None, help="Optional processing FPS cap.")
     parser.add_argument("--frame-stride", type=int, default=None, help="Process every Nth frame.")
     parser.add_argument("--resize-width", type=int, default=None, help="Resize frames before inference.")
@@ -139,6 +172,7 @@ def load_zone_and_line_managers(
     *,
     target_width: int | None = None,
     target_height: int | None = None,
+    point_strategy: PointStrategy = "bottom_center",
 ) -> tuple[ZoneManager, list[LineManager]]:
     """Load zone and line configuration managers from one JSON file."""
     if not zones_config_path.exists():
@@ -166,7 +200,7 @@ def load_zone_and_line_managers(
                 [point[0] * scale_x, point[1] * scale_y] for point in zone_copy.get("polygon", [])
             ]
         zone_configs.append(ZoneConfig.from_dict(zone_copy))
-    zone_manager = ZoneManager(zones=zone_configs)
+    zone_manager = ZoneManager(zones=zone_configs, point_strategy=point_strategy)
 
     lines_raw = raw.get("lines", [])
     if not isinstance(lines_raw, list):
@@ -195,7 +229,8 @@ def load_zone_and_line_managers(
                     end=end,
                     in_label=str(line.get("in_label", "IN")),
                     out_label=str(line.get("out_label", "OUT")),
-                )
+                ),
+                point_strategy=point_strategy,
             )
         )
     return zone_manager, line_managers
@@ -206,7 +241,7 @@ def print_source_help(source: str | int) -> None:
     print(f"Unable to open source: {redact_source_uri(source)}")
     if str(source) == "data/input_videos/sample.mp4":
         print("No sample video found at data/input_videos/sample.mp4.")
-        print("Please add a sample video file there, or pass --source with another path.")
+        print("Please add the selected Pexels platform sample there, or pass --source with another path.")
     print("Provide one of the following:")
     print("  1) Existing video file path")
     print("  2) Webcam index (e.g. --source 0)")
@@ -215,6 +250,7 @@ def print_source_help(source: str | int) -> None:
 
 def resolve_runtime_args(args: argparse.Namespace, settings: AppSettings, camera: CameraSettings | None) -> dict[str, Any]:
     """Resolve effective runtime settings from config, camera, and CLI overrides."""
+    detector_mode = normalize_detector_mode(args.detector_mode)
     source = parse_source_value(args.source) if args.source is not None else None
     source = source if source is not None else (camera.source if camera is not None else "data/input_videos/sample.mp4")
     source_type = args.source_type or (camera.source_type if camera is not None else None)
@@ -236,13 +272,33 @@ def resolve_runtime_args(args: argparse.Namespace, settings: AppSettings, camera
         if args.snapshot_interval is not None
         else settings.persistence.snapshot_interval_seconds
     )
+    model = args.model or (str(DEFAULT_HEAD_MODEL_PATH) if detector_mode == "head" else settings.model.weights)
+    confidence = args.confidence if args.confidence is not None else settings.model.confidence
+    if detector_mode == "head" and args.confidence is None:
+        # Small heads in CCTV-angle video are often lower confidence than full
+        # body boxes; keep explicit CLI/config values tunable.
+        confidence = settings.model.head_confidence
+    imgsz = args.imgsz if args.imgsz is not None else settings.model.imgsz
+    if detector_mode == "head" and args.imgsz is None:
+        # Avoid shrinking 1280x720 CCTV footage to 640px for head detection,
+        # where many heads become too small for reliable inference.
+        imgsz = settings.model.head_imgsz
+    max_det = args.max_det if args.max_det is not None else settings.model.max_det
+    if detector_mode == "head" and args.max_det is None:
+        max_det = settings.model.head_max_det
+    augment = settings.model.augment if args.augment is None else bool(args.augment)
+    iou = args.iou if args.iou is not None else settings.model.iou
     return {
         "source": source,
         "source_type": source_type,
         "output": output,
         "zones_config": Path(zones_config),
-        "model": args.model or settings.model.weights,
-        "confidence": float(args.confidence if args.confidence is not None else settings.model.confidence),
+        "model": model,
+        "detector_mode": detector_mode,
+        "point_strategy": "center" if detector_mode == "head" else "bottom_center",
+        "detector_mode_label": DETECTOR_MODE_LABELS[detector_mode],
+        "confidence": float(confidence),
+        "iou": float(iou),
         "device": args.device or settings.model.device,
         "tracker_type": args.tracker or settings.tracker.type,
         "db": args.db,
@@ -254,39 +310,79 @@ def resolve_runtime_args(args: argparse.Namespace, settings: AppSettings, camera
         "max_fps": float(max_fps or 0.0),
         "frame_stride": int(frame_stride),
         "resize_width": args.resize_width if args.resize_width is not None else settings.runtime.resize_width,
+        "imgsz": int(imgsz),
+        "augment": bool(augment),
+        "max_det": int(max_det),
         "store_output_video": store_output_video,
     }
 
 
-def build_models(settings: AppSettings, *, model: str, confidence: float, device: str, tracker_type: str) -> tuple[Detector, Tracker]:
+def build_models(
+    settings: AppSettings,
+    *,
+    model: str,
+    confidence: float,
+    device: str,
+    tracker_type: str,
+    detector_mode: str,
+    imgsz: int,
+    iou: float,
+    augment: bool,
+    max_det: int,
+) -> tuple[Detector, Tracker]:
     """Build detector and tracker from settings and overrides."""
+    mode = normalize_detector_mode(detector_mode)
     detector = Detector(
         weights_path=model,
         device=device,
         confidence=confidence,
-        iou=settings.model.iou,
+        iou=iou,
         person_class_id=settings.model.person_class_id,
-        imgsz=settings.model.imgsz,
+        imgsz=imgsz,
+        augment=augment,
+        max_det=max_det,
         half=settings.model.half,
         accuracy_weights=settings.model.accuracy_weights,
         legacy_fallback_weights=settings.model.legacy_fallback_weights,
-        use_fine_tuned_if_available=settings.model.use_fine_tuned_if_available,
+        use_fine_tuned_if_available=settings.model.use_fine_tuned_if_available if mode == "body" else False,
+        detector_mode=mode,
     )
     tracker = Tracker(
         tracker_type=tracker_type,
         weights_path=model,
         device=device,
         confidence=confidence,
-        iou=settings.model.iou,
+        iou=iou,
         person_class_id=settings.model.person_class_id,
-        imgsz=settings.model.imgsz,
+        imgsz=imgsz,
+        augment=augment,
+        max_det=max_det,
         half=settings.model.half,
-        tracker_config_overrides=settings.tracker.config_overrides,
+        tracker_config_overrides={
+            **settings.tracker.config_overrides,
+            **(settings.tracker.head_config_overrides if mode == "head" else {}),
+        },
         accuracy_weights=settings.model.accuracy_weights,
         legacy_fallback_weights=settings.model.legacy_fallback_weights,
-        use_fine_tuned_if_available=settings.model.use_fine_tuned_if_available,
+        use_fine_tuned_if_available=settings.model.use_fine_tuned_if_available if mode == "body" else False,
+        detector_mode=mode,
     )
     return detector, tracker
+
+
+def validate_head_model(model: str) -> str | None:
+    """Return an actionable error message when a head-model path is missing."""
+    model_path = Path(model)
+    if model_path.exists():
+        return None
+    expected = DEFAULT_HEAD_MODEL_PATH
+    return (
+        "Head detector model not found.\n"
+        f"Expected Colab-trained weights at: {expected}\n"
+        f"Requested model path: {model}\n"
+        "Place the fine-tuned best.pt at the expected path or pass --model with an existing file. "
+        "Do not train locally for this workflow."
+    )
 
 
 def run_pipeline(args: argparse.Namespace) -> int:
@@ -305,6 +401,12 @@ def run_pipeline(args: argparse.Namespace) -> int:
         # Explicit sources are ad-hoc unless the caller names a configured camera.
         camera = None
     effective = resolve_runtime_args(args, settings, camera)
+
+    if effective["detector_mode"] == "head":
+        missing_model_message = validate_head_model(effective["model"])
+        if missing_model_message:
+            print(missing_model_message)
+            return 1
 
     reader = StreamReader(
         source=effective["source"],
@@ -338,6 +440,7 @@ def run_pipeline(args: argparse.Namespace) -> int:
             effective["zones_config"],
             target_width=target_width,
             target_height=target_height,
+            point_strategy=effective["point_strategy"],
         )
     except (FileNotFoundError, ValueError, KeyError, TypeError) as error:
         print(f"Zone/line config load failed: {error}")
@@ -350,6 +453,10 @@ def run_pipeline(args: argparse.Namespace) -> int:
         threshold_profile=effective["threshold_profile"],
     )
     crowd_analyzer = CrowdAnalyzer(thresholds_by_zone=thresholds_by_zone)
+    detection_filter = DetectionRegionFilter.from_zones_file(
+        effective["zones_config"],
+        detector_mode=effective["detector_mode"],
+    )
 
     try:
         detector, tracker = build_models(
@@ -358,6 +465,11 @@ def run_pipeline(args: argparse.Namespace) -> int:
             confidence=effective["confidence"],
             device=effective["device"],
             tracker_type=effective["tracker_type"],
+            detector_mode=effective["detector_mode"],
+            imgsz=effective["imgsz"],
+            iou=effective["iou"],
+            augment=effective["augment"],
+            max_det=effective["max_det"],
         )
     except RuntimeError as error:
         print(f"Model initialization failed: {error}")
@@ -370,6 +482,7 @@ def run_pipeline(args: argparse.Namespace) -> int:
         zone_manager=zone_manager,
         line_managers=line_managers,
         crowd_analyzer=crowd_analyzer,
+        detection_filter=detection_filter,
         use_tracking=True,
         resize_width=effective["resize_width"],
     )
@@ -384,6 +497,7 @@ def run_pipeline(args: argparse.Namespace) -> int:
             db_url=db_url,
             camera_id=effective["camera_id"] or "camera",
             snapshot_interval_secs=effective["snapshot_interval"],
+            detector_mode=effective["detector_mode"],
         )
         analytics_logger.register_camera(
             camera_name=effective["camera_name"],
@@ -396,6 +510,7 @@ def run_pipeline(args: argparse.Namespace) -> int:
             source=redact_source_uri(effective["source"]),
             source_type=reader.source_type,
             model_weights=effective["model"],
+            detector_mode=effective["detector_mode"],
             tracker_type=effective["tracker_type"],
             zones_config_path=str(effective["zones_config"]),
         )
@@ -407,6 +522,7 @@ def run_pipeline(args: argparse.Namespace) -> int:
         writer.set_fps(source_fps if source_fps > 0 else 20.0)
 
     processed = 0
+    total_detections = 0
     last_status: tuple[int, int] = (-1, -1)
     total_unique_passengers = 0
     try:
@@ -417,6 +533,7 @@ def run_pipeline(args: argparse.Namespace) -> int:
                 timestamp=frame.timestamp,
             )
             total_unique_passengers = result.unique_passengers_seen
+            total_detections += len(result.detections)
             if analytics_logger is not None:
                 track_ids = [
                     detection.track_id
@@ -436,6 +553,7 @@ def run_pipeline(args: argparse.Namespace) -> int:
                     source_type=frame.source_type,
                     reconnect_count=frame.reconnect_count,
                     dropped_frames=frame.dropped_frames,
+                    detector_mode=effective["detector_mode"],
                 )
                 status_key = (frame.reconnect_count, frame.dropped_frames)
                 if status_key != last_status and (frame.reconnect_count > 0 or frame.dropped_frames > 0):
@@ -456,13 +574,21 @@ def run_pipeline(args: argparse.Namespace) -> int:
                 zone_alerts=result.zone_alerts,
                 line_counts=result.line_counts,
                 overlays={
-                    "camera": effective["camera_id"] or effective["camera_name"],
-                    "source": reader.source_type,
-                    "frame": frame.index,
-                    "tracks": len(result.detections),
-                    "unique": result.unique_passengers_seen,
-                    "fps": f"{result.processing_fps:.2f}",
-                    "reconnects": frame.reconnect_count,
+                    "Mode": effective["detector_mode_label"],
+                    "Camera": effective["camera_id"] or effective["camera_name"],
+                    "Source": reader.source_type,
+                    "Frame": frame.index,
+                    "Confidence": f"{effective['confidence']:.2f}",
+                    "Img size": effective["imgsz"],
+                    "IoU": f"{effective['iou']:.2f}",
+                    "Tracker": effective["tracker_type"],
+                    "Current detections": len(result.detections),
+                    "Total detections": total_detections,
+                    "Unique": result.unique_passengers_seen,
+                    "Max det": effective["max_det"],
+                    "Augment": "on" if effective["augment"] else "off",
+                    "FPS": f"{result.processing_fps:.2f}",
+                    "Reconnects": frame.reconnect_count,
                 },
             )
             if writer is not None:

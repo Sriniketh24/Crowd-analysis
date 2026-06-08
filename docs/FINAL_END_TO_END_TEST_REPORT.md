@@ -5,6 +5,11 @@
 **Tester:** Final end-to-end testing agent
 **Environment:** macOS (Darwin 24.5.0), Python 3.12.5 (venv), project root `/Users/sriniketh/crowd-analysis`
 
+> Current sample note: `data/input_videos/sample.mp4` has since been replaced with
+> the selected public Pexels **People on Platform on Train Station** clip
+> (1280×720, 32.13 s, 803 frames). Re-run the commands below before quoting fresh
+> performance/count numbers.
+
 ---
 
 ## TL;DR Verdict
@@ -38,7 +43,7 @@ configs, and tests are healthy.
 
 | File | Status | Detail |
 |------|--------|--------|
-| `data/input_videos/sample.mp4` | ✅ present | 16 MB · h264 · 1920×1080 · 600 frames |
+| `data/input_videos/sample.mp4` | ✅ present | current canonical sample: 10 MB · h264 · 1280×720 · 803 frames |
 | `data/outputs/demo.mp4` | ✅ present, non-empty | 12 MB · **h264 / High / yuv420p** (browser-playable in `st.video`) · 600 frames |
 | `data/outputs/analytics.db` | ✅ present, non-empty | 952 KB · all 7 tables populated |
 | `data/outputs/report.csv` | ✅ present, readable | 854 KB · 6,654 data rows · loads in pandas |

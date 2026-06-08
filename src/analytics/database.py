@@ -54,6 +54,7 @@ class RunSession(Base):
     source: Mapped[str] = mapped_column(String, nullable=False)
     source_type: Mapped[str] = mapped_column(String, nullable=False, default="file")
     model_weights: Mapped[str | None] = mapped_column(String, nullable=True)
+    detector_mode: Mapped[str] = mapped_column(String, nullable=False, default="body")
     tracker_type: Mapped[str | None] = mapped_column(String, nullable=True)
     zones_config_path: Mapped[str | None] = mapped_column(String, nullable=True)
     started_at: Mapped[datetime] = mapped_column(
@@ -93,6 +94,7 @@ class FrameProcessed(Base):
     frame_index: Mapped[int] = mapped_column(Integer, nullable=False)
     source_timestamp: Mapped[float] = mapped_column(Float, nullable=False)
     source_type: Mapped[str] = mapped_column(String, nullable=False, default="file")
+    detector_mode: Mapped[str] = mapped_column(String, nullable=False, default="body")
     recorded_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
     )
@@ -121,6 +123,7 @@ class ZoneOccupancy(Base):
         Integer, ForeignKey("run_sessions.id", ondelete="CASCADE"), nullable=False
     )
     camera_id: Mapped[str] = mapped_column(String, nullable=False)
+    detector_mode: Mapped[str] = mapped_column(String, nullable=False, default="body")
     zone_id: Mapped[str] = mapped_column(String, nullable=False)
     frame_index: Mapped[int] = mapped_column(Integer, nullable=False)
     count: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -147,6 +150,7 @@ class LineCrossingEvent(Base):
         Integer, ForeignKey("run_sessions.id", ondelete="CASCADE"), nullable=False
     )
     camera_id: Mapped[str] = mapped_column(String, nullable=False)
+    detector_mode: Mapped[str] = mapped_column(String, nullable=False, default="body")
     line_id: Mapped[str] = mapped_column(String, nullable=False)
     line_name: Mapped[str | None] = mapped_column(String, nullable=True)
     track_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -174,6 +178,7 @@ class CrowdAlert(Base):
         Integer, ForeignKey("run_sessions.id", ondelete="CASCADE"), nullable=False
     )
     camera_id: Mapped[str] = mapped_column(String, nullable=False)
+    detector_mode: Mapped[str] = mapped_column(String, nullable=False, default="body")
     zone_id: Mapped[str] = mapped_column(String, nullable=False)
     alert_level: Mapped[str] = mapped_column(String, nullable=False)
     occupancy: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -215,21 +220,30 @@ SQLITE_MIGRATIONS: dict[str, dict[str, str]] = {
     "run_sessions": {
         "source_type": "ALTER TABLE run_sessions ADD COLUMN source_type VARCHAR DEFAULT 'file'",
         "model_weights": "ALTER TABLE run_sessions ADD COLUMN model_weights VARCHAR",
+        "detector_mode": "ALTER TABLE run_sessions ADD COLUMN detector_mode VARCHAR NOT NULL DEFAULT 'body'",
         "tracker_type": "ALTER TABLE run_sessions ADD COLUMN tracker_type VARCHAR",
         "zones_config_path": "ALTER TABLE run_sessions ADD COLUMN zones_config_path VARCHAR",
         "total_unique_passengers": "ALTER TABLE run_sessions ADD COLUMN total_unique_passengers INTEGER",
     },
     "frames_processed": {
         "source_type": "ALTER TABLE frames_processed ADD COLUMN source_type VARCHAR DEFAULT 'file'",
+        "detector_mode": "ALTER TABLE frames_processed ADD COLUMN detector_mode VARCHAR NOT NULL DEFAULT 'body'",
         "tracked_objects": "ALTER TABLE frames_processed ADD COLUMN tracked_objects INTEGER DEFAULT 0",
         "unique_passengers_seen": "ALTER TABLE frames_processed ADD COLUMN unique_passengers_seen INTEGER DEFAULT 0",
         "processing_fps": "ALTER TABLE frames_processed ADD COLUMN processing_fps FLOAT DEFAULT 0.0",
         "reconnect_count": "ALTER TABLE frames_processed ADD COLUMN reconnect_count INTEGER DEFAULT 0",
         "dropped_frames": "ALTER TABLE frames_processed ADD COLUMN dropped_frames INTEGER DEFAULT 0",
     },
+    "zone_occupancy": {
+        "detector_mode": "ALTER TABLE zone_occupancy ADD COLUMN detector_mode VARCHAR NOT NULL DEFAULT 'body'",
+    },
     "line_crossing_events": {
+        "detector_mode": "ALTER TABLE line_crossing_events ADD COLUMN detector_mode VARCHAR NOT NULL DEFAULT 'body'",
         "line_name": "ALTER TABLE line_crossing_events ADD COLUMN line_name VARCHAR",
         "track_id": "ALTER TABLE line_crossing_events ADD COLUMN track_id INTEGER",
+    },
+    "crowd_alerts": {
+        "detector_mode": "ALTER TABLE crowd_alerts ADD COLUMN detector_mode VARCHAR NOT NULL DEFAULT 'body'",
     },
 }
 

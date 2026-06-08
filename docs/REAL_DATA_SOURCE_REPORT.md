@@ -4,7 +4,7 @@
 > No synthetic, generated, or fabricated video was created or used. No unlabeled video is
 > claimed to be a labeled training dataset.
 >
-> Prepared: 2026-06-02 · Project: Indian railway platform passenger counting
+> Prepared: 2026-06-02 · Updated sample selection: 2026-06-05 · Project: Indian railway platform passenger counting
 
 ---
 
@@ -13,23 +13,21 @@
 | Field | Value |
 |-------|-------|
 | **File path (demo clip)** | `data/input_videos/sample.mp4` |
-| **File path (full master)** | `data/indian_railway_videos/pexels_crowded_train_station_6023186.mp4` |
-| **Source page URL** | https://www.pexels.com/video/crowded-train-station-6023186/ |
-| **Direct file URL** | https://videos.pexels.com/video-files/6023186/6023186-hd_1920_1080_30fps.mp4 |
-| **Creator** | Rahul Vhatkar (Pexels) |
-| **Why selected** | It is a **genuine Indian railway platform** — a Mumbai suburban ("local") train station. The purple/grey Mumbai EMU livery, train number `5257`, the `022` (Mumbai) phone codes on the platform hoardings, and the platform/awning architecture all confirm it is Indian. It shows **real passengers walking on the platform** with a train at the platform — exactly the scene this project targets. It is 1080p, clear, downloadable under a permissive license, and the baseline detector already finds people in it (see below). This is the closest match to "live Indian railway platform CCTV" among freely downloadable footage. |
-| **Indian railway-specific?** | **YES** — Mumbai suburban railway platform (Indian Railways / Mumbai local). |
-| **License / usage** | **Pexels License** — free to use, modification allowed, commercial use allowed, attribution not required. Prohibited: reselling unaltered copies, redistributing on other stock platforms, trademark use, implying endorsement. Our use (model testing + creating labeled training frames) is permitted. |
-| **Duration** | Master clip: **29.43 s** · `sample.mp4` demo trim: **20.00 s** (first 20 s, re-encoded H.264 / yuv420p / faststart for pipeline compatibility) |
-| **Resolution** | **1920 × 1080** |
-| **FPS** | **30 fps** (detected; `r_frame_rate = 30/1`) |
-| **Baseline detector check** | Legacy baseline check: `yolov8n.pt`, conf 0.25, class=person → **11–13 persons/frame** on the first three extracted frames. Current demo config uses `yolo11n.pt` by default, with `yolo11s.pt` available for higher-accuracy evaluation. Pretrained models catch foreground passengers but can **miss small/distant passengers near the train** → motivates fine-tuning (see Fine-Tuning Feasibility). |
+| **Preserved copy** | `data/input_videos/cctv_platform_sample.mp4` |
+| **Source page URL** | https://www.pexels.com/video/people-on-platform-on-train-station-12049569/ |
+| **Direct file URL** | https://videos.pexels.com/video-files/12049569/12049569-hd_1280_720_25fps.mp4 |
+| **Creator** | sergei skrynnik (Pexels) |
+| **Why selected** | It is real railway platform footage with an elevated, static-looking angle, a train at the platform, passengers at near and far distances, and moderate crowding. It is better suited than the older sample for CCTV-style full-body vs head-detection testing. |
+| **Indian railway-specific?** | **No** — use it as a CCTV-like railway platform demo sample only. |
+| **License / usage** | Pexels page labels the clip as Free to use / Free download. Use as demo/testing footage and keep source attribution in project notes. |
+| **Duration** | **32.13 s** |
+| **Resolution** | **1280 × 720** |
+| **FPS** | **25 fps** (`r_frame_rate = 25/1`) |
+| **Baseline detector check** | Current demo config uses `yolo11n.pt` by default, with `yolo11s.pt` available for higher-accuracy evaluation. This sample includes small/distant passengers and occlusion near the train, which motivates body-vs-head comparison. |
 
-> ⚠️ **Known limitation of this clip:** consecutive frames show larger-than-1-frame crowd
-> displacement, so the footage is **mildly sped-up / timelapse-style**. It is excellent for
-> **per-frame detection and density/occupancy** demos, but **sub-optimal for tracking-based
-> line-crossing counts** (trackers may switch IDs). For accurate in/out line counting, prefer
-> a normal-speed clip (e.g. the Delhi Metro held-out clip, or new normal-speed footage).
+> ⚠️ **Known limitation of this clip:** it is **not confirmed CCTV** and is **not
+> Indian Railway-specific**. Describe it as real public railway platform footage with a
+> CCTV-like elevated/static angle. For production claims, use approved Indian Railway CCTV.
 
 ---
 
@@ -37,9 +35,10 @@
 
 | # | Name | URL | Local path | Real/Synthetic | Indian railway-specific | Labels available | License / usage note | Usefulness (1–5) |
 |---|------|-----|-----------|----------------|-------------------------|------------------|----------------------|------------------|
-| 1 | Crowded Train Station (Mumbai local platform) | https://www.pexels.com/video/crowded-train-station-6023186/ | `data/indian_railway_videos/pexels_crowded_train_station_6023186.mp4` | **Real** | **YES** (Mumbai suburban) | No | Pexels License (free, commercial OK) | **5** |
-| 2 | People in Train Station (Delhi Metro concourse) | https://www.pexels.com/video/people-in-train-station-12899783/ | `data/indian_railway_videos/pexels_people_in_train_station_12899783.mp4` | **Real** | **YES** (Delhi Metro, "Towards Noida Electronic City") | No | Pexels License (free, commercial OK) | **4** (portrait 1080×1920; good held-out test) |
-| 3 | Station concourse, overhead grayscale (prior `sample.mp4`) | (was already in repo; provenance not documented) | `data/indian_railway_videos/station_concourse_overhead_grayscale_PRIOR-sample.mp4` | **Real** | No (looks like a Western transit hall / mall atrium) | No | **Unknown** — verify source before any redistribution | **3** (good overhead pedestrian demo, but not Indian) |
+| 1 | People on Platform on Train Station | https://www.pexels.com/video/people-on-platform-on-train-station-12049569/ | `data/input_videos/sample.mp4` | **Real** | No, but railway-platform-specific | No | Pexels page says Free to use / Free download | **5** |
+| 2 | Crowded Train Station (previous sample candidate) | https://www.pexels.com/video/crowded-train-station-6023186/ | `data/indian_railway_videos/pexels_crowded_train_station_6023186.mp4` | **Real** | **YES** (Mumbai suburban) | No | Pexels License (free, commercial OK) | **4** |
+| 3 | People in Train Station (Delhi Metro concourse) | https://www.pexels.com/video/people-in-train-station-12899783/ | `data/indian_railway_videos/pexels_people_in_train_station_12899783.mp4` | **Real** | **YES** (Delhi Metro, "Towards Noida Electronic City") | No | Pexels License (free, commercial OK) | **4** (portrait 1080×1920; good held-out test) |
+| 4 | Station concourse, overhead grayscale (prior `sample.mp4`) | (was already in repo; provenance not documented) | `data/indian_railway_videos/station_concourse_overhead_grayscale_PRIOR-sample.mp4` | **Real** | No (looks like a Western transit hall / mall atrium) | No | **Unknown** — verify source before any redistribution | **3** (good overhead pedestrian demo, but not Indian) |
 | 4 | OpenCV `vtest.avi` (UK campus CCTV) | https://github.com/opencv/opencv/blob/master/samples/data/vtest.avi | `data/input_videos/vtest_backup.avi` | **Real** | No | No | OpenCV sample (Apache-2.0 / BSD) | **2** (sparse ~6 people, 768×576; pipeline smoke test only) |
 | 5 | Indian Railways (freight train, scenic) | https://www.pexels.com/video/indian-railways-video-18626169/ | not downloaded | **Real** | Partly (Indian freight train, **no platform/passengers**) | No | Pexels License | **1** |
 | 6 | Indian railway (countryside POV from moving train) | https://www.pexels.com/video/indian-railway-28212383/ | not downloaded | **Real** | Partly (no platform/passengers) | No | Pexels License | **1** |
@@ -84,7 +83,8 @@
 
 | Video name | URL | Why useful | Demo/testing only? |
 |------------|-----|-----------|--------------------|
-| Crowded Train Station — Mumbai local (6023186) | https://www.pexels.com/video/crowded-train-station-6023186/ | Real **Indian platform** with passengers; primary demo & labeling source | **Yes** (no labels) |
+| People on Platform on Train Station (12049569) | https://www.pexels.com/video/people-on-platform-on-train-station-12049569/ | Canonical `sample.mp4`; real railway platform, CCTV-like elevated angle, people at different distances | **Yes** (no labels) |
+| Crowded Train Station — Mumbai local (6023186) | https://www.pexels.com/video/crowded-train-station-6023186/ | Previous sample candidate; real **Indian platform** with passengers | **Yes** (no labels) |
 | People in Train Station — Delhi Metro (12899783) | https://www.pexels.com/video/people-in-train-station-12899783/ | Real **Indian metro** concourse; held-out test from a different city | **Yes** (no labels) |
 | Prior repo concourse clip (grayscale overhead) | `data/indian_railway_videos/station_concourse_overhead_grayscale_PRIOR-sample.mp4` | Real dense overhead pedestrian flow; good non-Indian stress test | **Yes** (no labels) |
 | Pexels "indian railway" / "train station" collections | https://www.pexels.com/search/videos/indian%20railway/ | Many more free Indian/station clips to pick from | **Yes** |
@@ -97,7 +97,8 @@
 
 **Did we find a labeled *Indian railway platform* dataset?**
 **No.** There is no public, ready-made, labeled **Indian** railway-platform passenger dataset.
-The real Indian footage we obtained (Mumbai local, Delhi Metro) is **unlabeled**.
+The current canonical sample and the real Indian footage we obtained (Mumbai local,
+Delhi Metro) are **unlabeled**.
 
 **What labeled real data *does* exist (and is usable)?**
 - **Railway/metro-platform-specific, real, labeled:** RPEE-Heads (head bboxes, CC BY-SA 4.0),
@@ -138,7 +139,7 @@ The real Indian footage we obtained (Mumbai local, Delhi Metro) is **unlabeled**
 ## Recommended Dataset Plan
 
 1. **Test the current model on real platform video.**
-   Run the existing pipeline on `data/input_videos/sample.mp4` (real Mumbai platform). Record
+   Run the existing pipeline on `data/input_videos/sample.mp4` (selected Pexels CCTV-like platform sample). Record
    per-frame person counts and where it fails. The legacy `yolov8n.pt` spot-check saw
    about 11–13 foreground persons/frame and missed some small distant passengers; record
    current `yolo11n.pt`/`yolo11s.pt` results before claiming improvement.

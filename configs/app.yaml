@@ -12,6 +12,11 @@ model:
   iou: 0.5
   person_class_id: 0
   imgsz: 640
+  augment: false
+  max_det: 300
+  head_confidence: 0.25
+  head_imgsz: 1280
+  head_max_det: 1000
   half: false
   profile: cpu_demo
   use_fine_tuned_if_available: true
@@ -23,6 +28,13 @@ tracker:
   minimum_matching_threshold: 0.8
   config_overrides:
     track_low_thresh: 0.10
+    fuse_score: true
+  head_config_overrides:
+    track_low_thresh: 0.05
+    track_high_thresh: 0.20
+    new_track_thresh: 0.20
+    track_buffer: 45
+    match_thresh: 0.70
     fuse_score: true
 
 persistence:

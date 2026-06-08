@@ -1,8 +1,8 @@
 # Final Demo Report
 
 > **Historical report:** This report was generated on 2026-06-01 for the earlier
-> Roboflow concourse sample. The current demo clip is the public Mumbai platform
-> video documented in `docs/REAL_DATA_SOURCE_REPORT.md`, and current status is in
+> Roboflow concourse sample. The current demo clip is the selected public Pexels
+> railway platform clip documented in `docs/REAL_DATA_SOURCE_REPORT.md`, and current status is in
 > `docs/IMPLEMENTATION_SUMMARY.md` plus `docs/SENIOR_REVIEW_REPORT.md`.
 
 _Railway Crowd Analytics — end-to-end real-video validation_
@@ -21,7 +21,7 @@ _Generated: 2026-06-01_
   aggregate counts (no face crops, no identity data).
 - **Video path:** `data/input_videos/sample.mp4`
 - **Video duration:** 13.64 s
-- **Video resolution:** 1920 x 1080
+- **Current canonical sample resolution:** 1280 x 720
 - **FPS:** 25
 - **Frame count:** 341
 - **Codec:** H.264 (MP4 container)

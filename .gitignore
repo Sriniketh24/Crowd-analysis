@@ -37,6 +37,7 @@ data/head_datasets/
 data/indian_railway_videos/
 
 # Model weights and artifacts
+artifacts/
 models/*.pt
 models/*.onnx
 models/*.engine

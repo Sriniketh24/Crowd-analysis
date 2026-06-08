@@ -290,15 +290,16 @@ so conversion is mostly **file organization**, not re-encoding:
 
 - Download RPEE-Heads from https://doi.org/10.34735/ped.2024.2 into `data/rpee_heads/`
   (document manual steps if the portal has no CLI download).
-- Add a converter script (e.g. `scripts/prepare_rpee_heads.py`) that:
+- Use `scripts/prepare_head_dataset.py --dataset rpee_heads` to:
   - copies/links images and their `.txt` label files into the project's expected layout,
   - forces the class id to `0` = `head` (single class),
   - uses the dataset's **official train/val/test split** if provided, else makes a
     **clip-disjoint** split (no frames from the same video in two splits — prevents
     leakage),
   - writes a head dataset YAML.
-- If CrowdHuman/SCUT-HEAD are mixed in later, the converter normalizes their head boxes to
-  the same single-class YOLO format (CrowdHuman is JSON-ODGT; SCUT-HEAD is VOC XML).
+- If CrowdHuman/SCUT-HEAD are mixed in later, the same converter normalizes their head
+  boxes to the single-class YOLO format (CrowdHuman ODGT `hbox`; SCUT-HEAD VOC XML).
+  They are supplemental only; RPEE-Heads remains the primary dataset.
 
 ### 2. Train / val / test split
 
@@ -308,33 +309,29 @@ so conversion is mostly **file organization**, not re-encoding:
 
 ### 3. Training command (head model)
 
-A head-specific dataset YAML (single class `head`) plus the existing training entrypoint
-pattern. Example (a new `configs/train_rpee_heads.yaml` + reuse of the train script,
-generalized to accept a head model path/name):
+A head-specific dataset YAML (single class `head`) plus the Ultralytics training CLI.
+Training should happen on a GPU machine, not locally unless explicitly requested:
 
 ```bash
 # 1) Prepare data (no training, just organizes RPEE-Heads into YOLO layout)
-python3 scripts/prepare_rpee_heads.py --src data/rpee_heads --out data/head_dataset
+python3 scripts/prepare_head_dataset.py --dataset rpee_heads
 
 # 2) Fine-tune YOLO11n on heads (laptop/demo model)
-python3 scripts/train_yolo_indian_platform.py \
-    --data configs/train_rpee_heads.yaml \
-    --model yolo11n.pt \
-    --epochs 80 --imgsz 960
+yolo detect train data=configs/head_dataset.yaml model=yolo11n.pt \
+    epochs=80 imgsz=960 project=models/fine_tuned name=head_rpee_n
 
 # 3) Accuracy variant (GPU recommended)
-python3 scripts/train_yolo_indian_platform.py \
-    --data configs/train_rpee_heads.yaml \
-    --model yolo11s.pt \
-    --epochs 100 --imgsz 1280
+yolo detect train data=configs/head_dataset.yaml model=yolo11s.pt \
+    epochs=100 imgsz=1280 project=models/fine_tuned name=head_rpee_s
 ```
 
 Notes:
 - Use a **larger `imgsz`** (960–1280) than the body pipeline's 640 — heads are tiny and
   benefit from higher input resolution.
-- `configs/train_rpee_heads.yaml` mirrors the existing placeholder but with
-  `names: {0: head}` and the head dataset paths.
-- The training-guard logic in the script must be reused (refuse if labels absent).
+- `configs/head_dataset.yaml` is intentionally RPEE-only.
+- `configs/head_dataset_mixed.example.yaml` is an optional example for RPEE plus
+  locally prepared CrowdHuman/SCUT supplements. Do not use it unless those folders exist
+  and their terms are acceptable for the intended use.
 
 ### 4. Output model path
 

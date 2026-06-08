@@ -48,11 +48,12 @@ bottleneck crowds for the worst-case "fully packed platform" condition.
 |---|---|
 | **RPEE-Heads prepared?** | **YES** |
 | If no, why not | n/a — downloaded and converted successfully |
-| **Backup dataset used?** | **NO** (not needed; RPEE-Heads downloaded automatically) |
-| Backup dataset name | n/a (SCUT-HEAD converter is implemented but not run) |
+| **Supplemental dataset used?** | **NO** (RPEE-Heads remains the primary prepared dataset) |
+| Supplemental dataset names | CrowdHuman heads and SCUT-HEAD converters are available but not run |
 | **Local dataset path (YOLO)** | `data/head_datasets/yolo/rpee_heads/` |
 | **Raw dataset path** | `data/head_datasets/raw/rpee_heads/` (`training/`, `validation/`, `testing/`) |
-| **YOLO config path** | `configs/head_dataset.yaml` |
+| **YOLO config path** | `configs/head_dataset.yaml` (RPEE only) |
+| **Mixed example config** | `configs/head_dataset_mixed.example.yaml` (RPEE + optional supplements, only after local preparation) |
 | **Prep script** | `scripts/prepare_head_dataset.py` |
 
 Prepared YOLO layout:
@@ -134,6 +135,35 @@ testing/test/{images,labels}/        294 images /  294 labels   (held out)
 
 **Class mapping.** `0 = head` (single class, enforced on every row).
 
+### Optional supplemental converters
+
+RPEE-Heads is still the primary training dataset because it is the closest public
+railway-platform head-box dataset. The prep script also supports supplemental datasets
+for targeted robustness experiments, but it does **not** download them and they should
+not replace RPEE as the baseline:
+
+| Dataset | Role | Source / license note | Conversion |
+|---|---|---|---|
+| CrowdHuman heads | Supplemental occlusion/crowding variety; web images, not railway CCTV | Official source: https://www.crowdhuman.org/ · cite Shao et al. 2018 · intended for academic/research use; verify exact terms before commercial/production use | ODGT `hbox` head boxes → YOLO single-class `head` via `--dataset crowdhuman_heads` |
+| SCUT-HEAD | Supplemental overhead/classroom/surveillance-like head views; not railway platforms | Official source: https://github.com/HCIILAB/SCUT-HEAD-Dataset-Release · free to the academic community for research purpose usage only | Pascal-VOC XML boxes → YOLO single-class `head` via `--dataset scut_head` |
+
+Example commands after manually placing raw files locally:
+
+```bash
+python3 scripts/prepare_head_dataset.py --dataset crowdhuman_heads \
+  --raw-dir data/head_datasets/raw/crowdhuman \
+  --out-dir data/head_datasets/yolo/crowdhuman_heads
+
+python3 scripts/prepare_head_dataset.py --dataset scut_head \
+  --raw-dir data/head_datasets/raw/scut_head \
+  --out-dir data/head_datasets/yolo/scut_head
+```
+
+Use `configs/head_dataset_mixed.example.yaml` only when those supplemental YOLO folders
+exist. Keep final detector validation on RPEE's held-out test split and any future
+labeled Indian-platform frames; supplemental validation numbers alone are not a
+production-readiness claim.
+
 **Skipped files / invalid labels.** **14 invalid boxes skipped**, all degenerate
 **zero-width** boxes (e.g. `0 0.5685 0.1051 0.000000 0.000379`) that would be
 unusable for training. 12 were in train, 2 in val. **0 images** had a missing label;
@@ -204,7 +234,7 @@ final detector metrics (mAP@0.5, mAP@0.5:0.95, precision/recall, AP-by-head-size
   entrances. Clothing, luggage (large bags/trolleys), headwear, station geometry,
   camera optics, and lighting differ from Indian platforms → a real **domain gap**.
   Strong RPEE-Heads metrics do **not** prove Indian-platform accuracy.
-- **Backup datasets** (CrowdHuman, SCUT-HEAD, Brainwash) match railway platforms even
+- **Supplemental datasets** (CrowdHuman, SCUT-HEAD, Brainwash) match railway platforms even
   less well — CrowdHuman is web images, SCUT-HEAD is classrooms, Brainwash is a single
   café webcam (and its original host was removed over consent concerns). They are
   occlusion/variety supplements only, not platform validation data.

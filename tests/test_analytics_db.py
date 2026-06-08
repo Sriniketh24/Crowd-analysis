@@ -328,13 +328,14 @@ class TestExportTableToCsv:
         """Insert minimal test data across all tables."""
         Session = get_session_factory(engine)
         with db_session(Session) as session:
-            run = RunSession(camera_id="cam1", source="video.mp4")
+            run = RunSession(camera_id="cam1", source="video.mp4", detector_mode="head")
             session.add(run)
             session.flush()
             session.add(
                 FrameProcessed(
                     run_session_id=run.id,
                     camera_id="cam1",
+                    detector_mode="head",
                     frame_index=0,
                     source_timestamp=0.0,
                     total_detections=1,
@@ -344,6 +345,7 @@ class TestExportTableToCsv:
                 ZoneOccupancy(
                     run_session_id=run.id,
                     camera_id="cam1",
+                    detector_mode="head",
                     zone_id="zone_a",
                     frame_index=0,
                     count=3,
@@ -354,6 +356,7 @@ class TestExportTableToCsv:
                 LineCrossingEvent(
                     run_session_id=run.id,
                     camera_id="cam1",
+                    detector_mode="head",
                     line_id="gate",
                     direction="IN",
                     frame_index=0,
@@ -363,6 +366,7 @@ class TestExportTableToCsv:
                 CrowdAlert(
                     run_session_id=run.id,
                     camera_id="cam1",
+                    detector_mode="head",
                     zone_id="zone_a",
                     alert_level="WARNING",
                     occupancy=22,
@@ -379,6 +383,7 @@ class TestExportTableToCsv:
         rows = list(csv.DictReader(out.read_text().splitlines()))
         assert rows[0]["zone_id"] == "zone_a"
         assert rows[0]["count"] == "3"
+        assert rows[0]["detector_mode"] == "head"
 
     def test_export_line_crossing_events(self, engine, tmp_path):
         self._populate_db(engine)
@@ -410,6 +415,7 @@ class TestExportTableToCsv:
         assert "frame_index" in header
         assert "camera_id" in header
         assert "total_detections" in header
+        assert "detector_mode" in header
 
     def test_empty_table_exports_header_only(self, engine, tmp_path):
         """An empty DB must still write a header row (no crash, openable file)."""
@@ -425,13 +431,14 @@ class TestExportCombinedCsv:
     def _populate_db(self, engine):
         Session = get_session_factory(engine)
         with db_session(Session) as session:
-            run = RunSession(camera_id="cam1", source="video.mp4")
+            run = RunSession(camera_id="cam1", source="video.mp4", detector_mode="head")
             session.add(run)
             session.flush()
             session.add(
                 ZoneOccupancy(
                     run_session_id=run.id,
                     camera_id="cam1",
+                    detector_mode="head",
                     zone_id="zone_a",
                     frame_index=0,
                     count=3,
@@ -442,6 +449,7 @@ class TestExportCombinedCsv:
                 CrowdAlert(
                     run_session_id=run.id,
                     camera_id="cam1",
+                    detector_mode="head",
                     zone_id="zone_a",
                     alert_level="WARNING",
                     occupancy=22,
@@ -460,6 +468,7 @@ class TestExportCombinedCsv:
         rows = list(csv.DictReader(out.read_text().splitlines()))
         tables = {row["table"] for row in rows}
         assert {"run_sessions", "zone_occupancy", "crowd_alerts"} <= tables
+        assert "detector_mode" in rows[0]
 
     def test_combined_export_empty_db_header_only(self, engine, tmp_path):
         """Empty DB still produces a valid single CSV with just the header."""

@@ -1,0 +1,31 @@
+# Example mixed head-detection dataset for YOLO fine-tuning.
+#
+# Primary dataset remains RPEE-Heads:
+#   data/head_datasets/yolo/rpee_heads
+#   License: CC BY-SA 4.0
+#
+# Supplemental datasets below must be prepared separately and are optional:
+#   CrowdHuman heads -> data/head_datasets/yolo/crowdhuman_heads
+#     Source: https://www.crowdhuman.org/
+#     Terms: academic/research use; verify exact terms before commercial use.
+#   SCUT-HEAD -> data/head_datasets/yolo/scut_head
+#     Source: https://github.com/HCIILAB/SCUT-HEAD-Dataset-Release
+#     Terms: free to the academic community for research purpose usage only.
+#
+# Do not use this file unless the supplemental YOLO folders exist locally.
+# No dataset is downloaded by scripts/prepare_head_dataset.py.
+
+path: .
+
+train:
+  - data/head_datasets/yolo/rpee_heads/images/train
+  - data/head_datasets/yolo/crowdhuman_heads/images/train
+  - data/head_datasets/yolo/scut_head/images/train
+
+val:
+  - data/head_datasets/yolo/rpee_heads/images/val
+  - data/head_datasets/yolo/crowdhuman_heads/images/val
+  - data/head_datasets/yolo/scut_head/images/val
+
+names:
+  0: head

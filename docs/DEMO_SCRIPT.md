@@ -18,7 +18,8 @@ streamlit run src/dashboard/streamlit_app.py
 ```
 
 Open http://localhost:8501 in a browser and leave it on screen.
-Make sure `data/input_videos/sample.mp4` exists (any short crowd video works).
+Make sure `data/input_videos/sample.mp4` exists. It should be the selected Pexels
+**People on Platform on Train Station** clip, not the older phone/concourse sample.
 
 ---
 
@@ -44,7 +45,7 @@ Point to the four KPI tiles at the top:
 
 Scroll to the **sidebar** and show:
 
-1. The **video source** field — point to `data/input_videos/sample.mp4`.
+1. The **video source** field — point to `data/input_videos/sample.mp4`, the selected Pexels platform sample.
 2. The **zones config** dropdown — select `zones.example.json`.
 
 > "The system is fully config-driven. Zones, counting lines, and alert thresholds

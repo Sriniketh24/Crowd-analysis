@@ -27,14 +27,19 @@ Supported datasets
 ------------------
 * ``rpee_heads`` -- labels already in YOLO format (``class x y w h`` normalized).
   Conversion is mostly file organization using the official train/val/test split.
-* ``scut_head``  -- backup dataset. Pascal-VOC XML head boxes -> YOLO. Only runs
-  if the raw SCUT-HEAD files are present.
+* ``crowdhuman_heads`` -- supplemental dataset. CrowdHuman ODGT head boxes
+  (``hbox``) -> YOLO. Only runs if the raw CrowdHuman files are present.
+* ``scut_head`` -- supplemental dataset. Pascal-VOC XML head boxes -> YOLO.
+  Only runs if the raw SCUT-HEAD files are present.
 
 Examples
 --------
     python3 scripts/prepare_head_dataset.py --help
     python3 scripts/prepare_head_dataset.py --dataset rpee_heads
     python3 scripts/prepare_head_dataset.py --dataset rpee_heads --validate-only
+    python3 scripts/prepare_head_dataset.py --dataset crowdhuman_heads \\
+        --raw-dir data/head_datasets/raw/crowdhuman \\
+        --out-dir data/head_datasets/yolo/crowdhuman_heads
     python3 scripts/prepare_head_dataset.py --dataset scut_head \\
         --raw-dir data/head_datasets/raw/scut_head \\
         --out-dir data/head_datasets/yolo/scut_head
@@ -43,6 +48,7 @@ Examples
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shutil
 import sys
@@ -65,6 +71,10 @@ DEFAULTS = {
     "rpee_heads": {
         "raw": REPO_ROOT / "data/head_datasets/raw/rpee_heads",
         "out": REPO_ROOT / "data/head_datasets/yolo/rpee_heads",
+    },
+    "crowdhuman_heads": {
+        "raw": REPO_ROOT / "data/head_datasets/raw/crowdhuman",
+        "out": REPO_ROOT / "data/head_datasets/yolo/crowdhuman_heads",
     },
     "scut_head": {
         "raw": REPO_ROOT / "data/head_datasets/raw/scut_head",
@@ -200,6 +210,52 @@ def _validate_yolo_line(line: str) -> tuple[float, float, float, float] | None:
     return x, y, w, h
 
 
+def _pixel_xyxy_to_yolo(
+    xmin: float,
+    ymin: float,
+    xmax: float,
+    ymax: float,
+    img_w: float,
+    img_h: float,
+) -> tuple[float, float, float, float] | None:
+    """Convert pixel ``xyxy`` to normalized YOLO, clipping to image bounds."""
+    if img_w <= 0 or img_h <= 0:
+        return None
+    xmin = max(0.0, min(float(xmin), img_w))
+    ymin = max(0.0, min(float(ymin), img_h))
+    xmax = max(0.0, min(float(xmax), img_w))
+    ymax = max(0.0, min(float(ymax), img_h))
+    if not (xmax > xmin and ymax > ymin):
+        return None
+
+    xc = ((xmin + xmax) / 2.0) / img_w
+    yc = ((ymin + ymax) / 2.0) / img_h
+    w = (xmax - xmin) / img_w
+    h = (ymax - ymin) / img_h
+    if not (0 <= xc <= 1 and 0 <= yc <= 1 and 0 < w <= 1 and 0 < h <= 1):
+        return None
+    return xc, yc, w, h
+
+
+def _pixel_xywh_to_yolo(
+    x: float,
+    y: float,
+    w: float,
+    h: float,
+    img_w: float,
+    img_h: float,
+) -> tuple[float, float, float, float] | None:
+    """Convert pixel ``xywh`` to normalized YOLO, clipping to image bounds."""
+    if w <= 0 or h <= 0:
+        return None
+    return _pixel_xyxy_to_yolo(x, y, x + w, y + h, img_w, img_h)
+
+
+def _format_yolo_box(box: tuple[float, float, float, float]) -> str:
+    x, y, w, h = box
+    return f"{HEAD_CLASS_ID} {x:.6f} {y:.6f} {w:.6f} {h:.6f}"
+
+
 def _clean_label_text(src: Path, result: PrepResult) -> tuple[str, int]:
     """Read a YOLO label file, drop invalid boxes, force class 0.
 
@@ -214,14 +270,18 @@ def _clean_label_text(src: Path, result: PrepResult) -> tuple[str, int]:
         if box is None:
             result.skipped_invalid_box.append(f"{src}: {line!r}")
             continue
-        x, y, w, h = box
-        kept.append(f"{HEAD_CLASS_ID} {x:.6f} {y:.6f} {w:.6f} {h:.6f}")
+        kept.append(_format_yolo_box(box))
     return ("\n".join(kept) + ("\n" if kept else "")), len(kept)
 
 
-def _place_image(image: Path, dest_dir: Path, link: bool) -> None:
+def _safe_output_stem(image: Path, raw_dir: Path) -> str:
+    rel = image.relative_to(raw_dir).with_suffix("")
+    return "__".join(rel.parts)
+
+
+def _place_image(image: Path, dest_dir: Path, link: bool, dest_name: str | None = None) -> None:
     dest_dir.mkdir(parents=True, exist_ok=True)
-    dest = dest_dir / image.name
+    dest = dest_dir / (dest_name or image.name)
     if dest.exists() or dest.is_symlink():
         dest.unlink()
     if link:
@@ -326,7 +386,210 @@ def _raise_missing_rpee(raw_dir: Path) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# SCUT-HEAD (backup; Pascal-VOC XML -> YOLO)
+# CrowdHuman (supplemental; ODGT hbox -> YOLO)
+# --------------------------------------------------------------------------- #
+
+
+def _build_image_index(raw_dir: Path) -> dict[str, list[Path]]:
+    index: dict[str, list[Path]] = {}
+    for image in _iter_images(raw_dir):
+        index.setdefault(image.stem, []).append(image)
+    return index
+
+
+def _find_indexed_image(
+    image_id: str, image_index: dict[str, list[Path]], preferred_split: str
+) -> Path | None:
+    matches = image_index.get(image_id, []) or image_index.get(Path(image_id).stem, [])
+    if not matches:
+        return None
+    if len(matches) == 1:
+        return matches[0]
+    split_hints = {
+        "train": ("train", "training"),
+        "val": ("val", "valid", "validation"),
+    }.get(preferred_split, (preferred_split,))
+    for image in matches:
+        parts = {part.lower() for part in image.parts}
+        if any(hint in parts for hint in split_hints):
+            return image
+    return matches[0]
+
+
+def _read_image_size(image: Path) -> tuple[int, int] | None:
+    try:
+        from PIL import Image
+
+        with Image.open(image) as img:
+            return img.size
+    except Exception:
+        pass
+
+    try:
+        import cv2
+
+        frame = cv2.imread(str(image))
+        if frame is None:
+            return None
+        h, w = frame.shape[:2]
+        return w, h
+    except Exception:
+        return None
+
+
+def _crowdhuman_ann_files(raw_dir: Path) -> list[tuple[str, Path]]:
+    ann_files: list[tuple[str, Path]] = []
+    for path in sorted(raw_dir.rglob("*.odgt")):
+        split = _classify_split(path.relative_to(raw_dir))
+        if split == "test":
+            continue
+        if split is None:
+            name = path.name.lower()
+            if "train" in name:
+                split = "train"
+            elif "val" in name:
+                split = "val"
+        if split in ("train", "val"):
+            ann_files.append((split, path))
+    return ann_files
+
+
+def _crowdhuman_record_to_yolo_lines(
+    record: dict,
+    img_w: float,
+    img_h: float,
+) -> tuple[list[str], int]:
+    """Convert one CrowdHuman ODGT record's ``hbox`` entries to YOLO lines."""
+    lines: list[str] = []
+    skipped = 0
+    for gtbox in record.get("gtboxes", []):
+        if not isinstance(gtbox, dict):
+            skipped += 1
+            continue
+        extra = gtbox.get("extra") or {}
+        if isinstance(extra, dict):
+            try:
+                if int(extra.get("ignore", 0) or 0) == 1:
+                    continue
+            except (TypeError, ValueError):
+                skipped += 1
+                continue
+        hbox = gtbox.get("hbox")
+        if not isinstance(hbox, (list, tuple)) or len(hbox) != 4:
+            skipped += 1
+            continue
+        try:
+            x, y, w, h = (float(hbox[0]), float(hbox[1]), float(hbox[2]), float(hbox[3]))
+        except (TypeError, ValueError):
+            skipped += 1
+            continue
+        box = _pixel_xywh_to_yolo(x, y, w, h, img_w, img_h)
+        if box is None:
+            skipped += 1
+            continue
+        lines.append(_format_yolo_box(box))
+    return lines, skipped
+
+
+def prepare_crowdhuman_heads(raw_dir: Path, out_dir: Path, link: bool = True) -> PrepResult:
+    """Convert CrowdHuman ``hbox`` head boxes to YOLO.
+
+    CrowdHuman is a supplemental occlusion/crowding dataset, not the primary
+    railway-platform dataset. Expected local files include ``annotation_train.odgt``
+    and/or ``annotation_val.odgt`` plus matching images named ``<ID>.<ext>``.
+    No files are downloaded by this script.
+    """
+    result = PrepResult(dataset="crowdhuman_heads", out_dir=out_dir)
+
+    if not raw_dir.exists():
+        _raise_missing_crowdhuman(raw_dir, out_dir)
+    ann_files = _crowdhuman_ann_files(raw_dir)
+    if not ann_files:
+        _raise_missing_crowdhuman(raw_dir, out_dir)
+
+    _reset_out_dir(out_dir)
+    image_index = _build_image_index(raw_dir)
+
+    for split, ann_path in ann_files:
+        for line_no, raw_line in enumerate(
+            ann_path.read_text(encoding="utf-8", errors="replace").splitlines(), start=1
+        ):
+            line = raw_line.strip()
+            if not line:
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                result.skipped_unreadable.append(f"{ann_path}:{line_no}")
+                continue
+
+            image_id = str(record.get("ID") or record.get("id") or "").strip()
+            if not image_id:
+                result.skipped_unreadable.append(f"{ann_path}:{line_no}: missing ID")
+                continue
+            image = _find_indexed_image(image_id, image_index, split)
+            if image is None:
+                result.skipped_missing_label.append(f"{ann_path}:{line_no}: image {image_id}")
+                continue
+
+            img_w = record.get("width") or record.get("img_width")
+            img_h = record.get("height") or record.get("img_height")
+            if img_w is None or img_h is None:
+                size = _read_image_size(image)
+                if size is None:
+                    result.skipped_unreadable.append(str(image))
+                    continue
+                img_w, img_h = size
+
+            try:
+                img_w_f, img_h_f = float(img_w), float(img_h)
+            except (TypeError, ValueError):
+                result.skipped_unreadable.append(f"{ann_path}:{line_no}: invalid image size")
+                continue
+
+            lines, skipped = _crowdhuman_record_to_yolo_lines(record, img_w_f, img_h_f)
+            if skipped:
+                result.skipped_invalid_box.append(f"{ann_path}:{line_no}: {skipped} box(es)")
+
+            out_stem = _safe_output_stem(image, raw_dir)
+            _place_image(
+                image,
+                out_dir / "images" / split,
+                link=link,
+                dest_name=f"{out_stem}{image.suffix.lower()}",
+            )
+            text = "\n".join(lines) + ("\n" if lines else "")
+            (out_dir / "labels" / split / f"{out_stem}.txt").write_text(
+                text, encoding="utf-8"
+            )
+
+            st = result.split(split)
+            st.images += 1
+            st.labels += 1
+            st.boxes += len(lines)
+
+    return result
+
+
+def _raise_missing_crowdhuman(raw_dir: Path, out_dir: Path) -> None:
+    raise SystemExit(
+        "ERROR: CrowdHuman raw data not found (no .odgt annotations under "
+        f"{raw_dir}).\n\n"
+        "CrowdHuman is SUPPLEMENTAL only; RPEE-Heads remains the primary dataset.\n"
+        "This script does not download data. To use CrowdHuman head boxes:\n"
+        "  1. Review the official source and terms:\n"
+        "       https://www.crowdhuman.org/\n"
+        "     CrowdHuman is intended for academic/research use; verify terms before use.\n"
+        "  2. Place annotation_train.odgt / annotation_val.odgt and images under:\n"
+        f"       {raw_dir}\n"
+        "  3. Re-run:\n"
+        "       python3 scripts/prepare_head_dataset.py --dataset crowdhuman_heads \\\n"
+        f"           --raw-dir {raw_dir} --out-dir {out_dir}\n"
+    )
+
+
+# --------------------------------------------------------------------------- #
+# SCUT-HEAD (supplemental; Pascal-VOC XML -> YOLO)
 # --------------------------------------------------------------------------- #
 
 
@@ -363,22 +626,44 @@ def _voc_to_yolo_boxes(xml_path: Path) -> tuple[list[str], int, int] | None:
         except ValueError:
             skipped += 1
             continue
-        if not (xmax > xmin and ymax > ymin):
+        box = _pixel_xyxy_to_yolo(xmin, ymin, xmax, ymax, img_w, img_h)
+        if box is None:
             skipped += 1
             continue
-        xc = ((xmin + xmax) / 2.0) / img_w
-        yc = ((ymin + ymax) / 2.0) / img_h
-        w = (xmax - xmin) / img_w
-        h = (ymax - ymin) / img_h
-        if not (0 <= xc <= 1 and 0 <= yc <= 1 and 0 < w <= 1 and 0 < h <= 1):
-            skipped += 1
-            continue
-        lines.append(f"{HEAD_CLASS_ID} {xc:.6f} {yc:.6f} {w:.6f} {h:.6f}")
+        lines.append(_format_yolo_box(box))
     return lines, skipped, len(lines)
 
 
+def _load_scut_split_map(raw_dir: Path) -> dict[str, str]:
+    """Read SCUT/VOC ImageSets split files when available.
+
+    VOC test files are mapped to YOLO ``val`` because this script only prepares
+    train/val folders. If no split files exist the caller falls back to a
+    deterministic split.
+    """
+    split_map: dict[str, str] = {}
+    aliases = {
+        "train": "train",
+        "training": "train",
+        "val": "val",
+        "valid": "val",
+        "validation": "val",
+        "test": "val",
+        "testing": "val",
+    }
+    for split_file in sorted(raw_dir.rglob("ImageSets/Main/*.txt")):
+        split = aliases.get(split_file.stem.lower())
+        if split is None:
+            continue
+        for raw_line in split_file.read_text(encoding="utf-8", errors="replace").splitlines():
+            stem = raw_line.strip().split()[0] if raw_line.strip() else ""
+            if stem:
+                split_map[Path(stem).stem] = split
+    return split_map
+
+
 def prepare_scut_head(raw_dir: Path, out_dir: Path, link: bool = True) -> PrepResult:
-    """Convert SCUT-HEAD (VOC XML) to YOLO. Backup dataset only.
+    """Convert SCUT-HEAD (VOC XML) to YOLO. Supplemental dataset only.
 
     Expected raw layout (SCUT-HEAD Part A / Part B):
         <raw>/**/JPEGImages/*.jpg
@@ -392,8 +677,10 @@ def prepare_scut_head(raw_dir: Path, out_dir: Path, link: bool = True) -> PrepRe
         raise SystemExit(
             "ERROR: SCUT-HEAD raw data not found (no .xml annotations under "
             f"{raw_dir}).\n\n"
-            "This is the BACKUP dataset. To use it:\n"
+            "SCUT-HEAD is SUPPLEMENTAL only; RPEE-Heads remains the primary dataset.\n"
+            "To use it:\n"
             "  1. Download from: https://github.com/HCIILAB/SCUT-HEAD-Dataset-Release\n"
+            "     SCUT-HEAD is free for academic research use only.\n"
             "  2. Unzip Part A / Part B into:\n"
             f"       {raw_dir}\n"
             "  3. Re-run:\n"
@@ -403,6 +690,7 @@ def prepare_scut_head(raw_dir: Path, out_dir: Path, link: bool = True) -> PrepRe
 
     _reset_out_dir(out_dir)
     images = list(_iter_images(raw_dir))
+    split_map = _load_scut_split_map(raw_dir)
 
     # deterministic split: every 7th image -> val
     for idx, image in enumerate(images):
@@ -427,10 +715,24 @@ def prepare_scut_head(raw_dir: Path, out_dir: Path, link: bool = True) -> PrepRe
         if skipped:
             result.skipped_invalid_box.append(f"{xml}: {skipped} box(es)")
 
-        split = "val" if idx % 7 == 0 else "train"
-        _place_image(image, out_dir / "images" / split, link=link)
+        split = split_map.get(image.stem)
+        if split is None:
+            inferred = _classify_split(image.relative_to(raw_dir))
+            split = "val" if inferred in ("val", "test") else inferred
+        if split not in ("train", "val"):
+            split = "val" if idx % 7 == 0 else "train"
+
+        out_stem = _safe_output_stem(image, raw_dir)
+        _place_image(
+            image,
+            out_dir / "images" / split,
+            link=link,
+            dest_name=f"{out_stem}{image.suffix.lower()}",
+        )
         text = "\n".join(lines) + ("\n" if lines else "")
-        (out_dir / "labels" / split / f"{image.stem}.txt").write_text(text, encoding="utf-8")
+        (out_dir / "labels" / split / f"{out_stem}.txt").write_text(
+            text, encoding="utf-8"
+        )
 
         st = result.split(split)
         st.images += 1
@@ -484,11 +786,16 @@ def validate_yolo_dataset(out_dir: Path) -> PrepResult:
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Prepare a real labeled head dataset (RPEE-Heads primary) in YOLO format.",
+        description=(
+            "Prepare real labeled head datasets in YOLO format "
+            "(RPEE-Heads primary; CrowdHuman/SCUT supplemental)."
+        ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Primary dataset: RPEE-Heads (railway platforms + event entrances, "
-            "CC BY-SA 4.0).\nThis script never creates fake labels; if raw data is "
+            "CC BY-SA 4.0).\n"
+            "Supplemental only: CrowdHuman heads and SCUT-HEAD.\n"
+            "This script never creates fake labels; if raw data is "
             "missing it prints download steps and exits."
         ),
     )
@@ -546,6 +853,8 @@ def main(argv: list[str] | None = None) -> int:
         result = prepare_rpee_heads(
             raw_dir, out_dir, link=not args.copy, test_into_val=args.test_into_val
         )
+    elif args.dataset == "crowdhuman_heads":
+        result = prepare_crowdhuman_heads(raw_dir, out_dir, link=not args.copy)
     elif args.dataset == "scut_head":
         result = prepare_scut_head(raw_dir, out_dir, link=not args.copy)
     else:  # pragma: no cover - argparse restricts choices

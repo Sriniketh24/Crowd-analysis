@@ -14,7 +14,7 @@ stores everything in SQLite — surfaced through a FastAPI backend and a Streaml
 dashboard.
 
 > Built on **pretrained YOLO** — no custom dataset required for demos. It runs today
-> on sample video and webcam sources, and accepts RTSP/HTTP URLs through OpenCV for
+> on the bundled public sample video and webcam sources, and accepts RTSP/HTTP URLs through OpenCV for
 > initial testing. Production accuracy and reliable live CCTV operation require
 > approved footage, labeled data, fine-tuning, stream hardening, and station-specific
 > calibration (see production roadmap).
@@ -85,17 +85,25 @@ pip install -r requirements.txt
 > move the project folder, recreate it (`rm -rf .venv && python3.11 -m venv .venv`)
 > — a moved `.venv` will fail to activate.
 
-### 2) Add a demo video (no private CCTV needed)
+### 2) Use the bundled demo video (no private CCTV needed)
 
-Place any short, public/sample crowd clip at:
+The canonical sample video is already placed at:
 
 ```
 data/input_videos/sample.mp4
 ```
 
-The system is designed to demo on **sample/public video only**. You can also point
-it at a webcam (`--source 0`) or an RTSP/HTTP URL instead of a file. If the source
-is missing, the demo prints clear guidance instead of crashing.
+It is the selected Pexels clip **People on Platform on Train Station**:
+https://www.pexels.com/video/people-on-platform-on-train-station-12049569/
+
+This is real railway platform footage with an elevated, static-looking angle. It is
+good for CCTV-style demo/testing, but it is **not confirmed CCTV** and is **not
+Indian Railway-specific**. Source metadata is stored in
+`data/input_videos/sample.source.json`. You can also point the runner at a webcam
+(`--source 0`) or an RTSP/HTTP URL instead of a file. If the source is missing,
+the demo prints clear guidance instead of crashing. See
+`docs/SAMPLE_VIDEO_SOURCE.md` for the exact source, dimensions, and wording to use
+in future docs.
 
 ### 3) Run the video demo
 
@@ -104,7 +112,8 @@ python scripts/run_video_demo.py \
   --source data/input_videos/sample.mp4 \
   --output data/outputs/demo.mp4 \
   --zones-config configs/zones.example.json \
-  --db data/outputs/analytics.db
+  --db data/outputs/analytics.db \
+  --detector-mode body
 ```
 
 This produces an annotated `demo.mp4` and writes analytics to `analytics.db`.
@@ -115,8 +124,62 @@ This produces an annotated `demo.mp4` and writes analytics to `analytics.db`.
 streamlit run src/dashboard/streamlit_app.py
 ```
 
-Open <http://localhost:8501>. Pick a source in the sidebar and click
-**▶ Process Video**, or just view analytics from a previous run.
+Open <http://localhost:8501>. The dashboard compares **full-body detection** against
+**head-based detection** side by side, with run buttons, annotated video playback,
+analytics comparison tables, and report download.
+
+---
+
+## Body vs Head Detection Comparison
+
+In Indian railway platform CCTV footage, passengers at the far end of the platform
+may be too small or obscured for full-body detection to work reliably. A head detector
+can catch these passengers because the head is often visible even when the body is blocked.
+The bundled `sample.mp4` is CCTV-like public platform footage intended to exercise this
+comparison; it is not approved Indian Railway CCTV.
+
+The system supports two modes:
+
+| Mode | Detector | Point strategy | Use when |
+|------|----------|----------------|----------|
+| `body` | Pretrained YOLO (person) | Bottom-centre of bounding box | Passengers are close and clearly visible |
+| `head` | Fine-tuned YOLO (head, Colab-trained) | Centre of head box | Passengers are distant, occluded, or in dense crowds |
+
+**Run both modes and compare results:**
+
+```bash
+python scripts/run_comparison_demo.py \
+  --source data/input_videos/sample.mp4 \
+  --zones-config configs/zones.example.json
+```
+
+**Or run each mode separately:**
+
+```bash
+# Full-body mode
+python scripts/run_video_demo.py \
+  --source data/input_videos/sample.mp4 \
+  --output data/outputs/body_demo.mp4 \
+  --zones-config configs/zones.example.json \
+  --db data/outputs/body_analytics.db \
+  --detector-mode body
+
+# Head mode (requires fine-tuned best.pt)
+python scripts/run_video_demo.py \
+  --source data/input_videos/sample.mp4 \
+  --output data/outputs/head_demo.mp4 \
+  --zones-config configs/zones.example.json \
+  --db data/outputs/head_analytics.db \
+  --detector-mode head \
+  --model models/fine_tuned/head_detector/weights/best.pt
+```
+
+The head model was fine-tuned in Google Colab (not locally) and is located at
+`models/fine_tuned/head_detector/weights/best.pt`. See
+`docs/HEAD_MODEL_TRAINING_REPORT.md` and `docs/BODY_VS_HEAD_INTEGRATION_REPORT.md`
+for details.
+
+---
 
 ### 5) Launch the API
 
@@ -160,6 +223,9 @@ with the virtual environment activated.
 | Byte-compile all source (sanity check) | `python -m compileall src scripts` |
 | Run the test suite | `pytest` |
 | Video demo help | `python scripts/run_video_demo.py --help` |
+| Body/head comparison help | `python scripts/run_comparison_demo.py --help` |
+| Head detector training help | `python scripts/train_head_detector.py --help` |
+| Head detector evaluation help | `python scripts/evaluate_head_detector.py --help` |
 | Export report help | `python scripts/export_report.py --help` |
 | Start the API (auto-reload) | `uvicorn src.api.app:app --reload` |
 | Start the dashboard | `streamlit run src/dashboard/streamlit_app.py` |
@@ -168,10 +234,11 @@ with the virtual environment activated.
 
 | Flag | Default | Description |
 |---|---|---|
-| `--source` | `data/input_videos/sample.mp4` | File path, webcam index (e.g. `0`), or RTSP/HTTP URL |
+| `--source` | `data/input_videos/sample.mp4` | File path, webcam index (e.g. `0`), or RTSP/HTTP URL. The bundled sample is the selected Pexels CCTV-like railway platform clip. |
 | `--output` | `data/outputs/demo.mp4` | Annotated output video path |
 | `--zones-config` | `configs/zones.example.json` | Zone/line JSON config |
 | `--model` | `yolo11n.pt` | YOLO weights path or model name (`yolo11s.pt` recommended when hardware allows) |
+| `--detector-mode` | `body` | `body` = full-person detector; `head` = Colab fine-tuned head detector |
 | `--confidence` | `0.35` | Detection confidence threshold |
 | `--show` | off | Show a live preview window while processing |
 | `--db` | _none_ | SQLite analytics DB path (enables logging) |
@@ -187,6 +254,52 @@ with the virtual environment activated.
 | `--table` | One of `run_sessions`, `frames_processed`, `zone_occupancy`, `line_crossing_events`, `crowd_alerts` |
 | `--camera` | Filter rows by `camera_id` |
 | `--session` | Filter rows by `run_session_id` |
+
+### Head Detector Fine-Tuning
+
+The head detector uses the real labeled RPEE-Heads dataset prepared under
+`data/head_datasets/yolo/rpee_heads/` and configured by
+`configs/head_dataset.yaml`. Do not run this workflow unless that YAML and the
+real labels are present.
+
+A Colab-trained YOLO11n head detector is expected at
+`models/fine_tuned/head_detector/weights/best.pt` when model artifacts have been
+restored. See `docs/HEAD_MODEL_TRAINING_REPORT.md` for the dataset and training
+metrics.
+
+Laptop/demo training:
+
+```bash
+python scripts/train_head_detector.py \
+  --data configs/head_dataset.yaml \
+  --model yolo11n.pt \
+  --epochs 15 \
+  --imgsz 640 \
+  --batch 8
+```
+
+If memory is tight, retry with `--batch 4`. For better accuracy on suitable
+hardware, use `--model yolo11s.pt` and train longer.
+
+Evaluate the trained model on the bundled Pexels sample video:
+
+```bash
+python scripts/run_video_demo.py \
+  --model models/fine_tuned/head_detector/weights/best.pt \
+  --source data/input_videos/sample.mp4 \
+  --output data/outputs/head_demo.mp4 \
+  --zones-config configs/zones.example.json \
+  --db data/outputs/head_analytics.db \
+  --detector-mode head
+```
+
+Run body and head mode on the same video:
+
+```bash
+python scripts/run_comparison_demo.py \
+  --source data/input_videos/sample.mp4 \
+  --zones-config configs/zones.example.json
+```
 
 ---
 
@@ -273,7 +386,7 @@ docker compose up --build
 
 ## Benchmarking And Training Prep
 
-Benchmark model options on the sample clip:
+Benchmark model options on the bundled Pexels sample clip:
 
 ```bash
 python scripts/benchmark_models.py \

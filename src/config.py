@@ -114,6 +114,11 @@ class ModelSettings:
     iou: float = 0.5
     person_class_id: int = 0
     imgsz: int = 640
+    augment: bool = False
+    max_det: int = 300
+    head_confidence: float = 0.25
+    head_imgsz: int = 1280
+    head_max_det: int = 1000
     half: bool = False
     profile: str = "cpu_demo"
     use_fine_tuned_if_available: bool = True
@@ -125,6 +130,7 @@ class TrackerSettings:
 
     type: str = "bytetrack"
     config_overrides: dict[str, Any] = field(default_factory=dict)
+    head_config_overrides: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -220,6 +226,11 @@ def load_app_settings(path: str | Path = "configs/app.yaml") -> AppSettings:
             iou=float(model_raw.get("iou", 0.5)),
             person_class_id=int(model_raw.get("person_class_id", 0)),
             imgsz=int(model_raw.get("imgsz", 640)),
+            augment=bool(model_raw.get("augment", False)),
+            max_det=int(model_raw.get("max_det", 300)),
+            head_confidence=float(model_raw.get("head_confidence", 0.25)),
+            head_imgsz=int(model_raw.get("head_imgsz", 1280)),
+            head_max_det=int(model_raw.get("head_max_det", 1000)),
             half=bool(model_raw.get("half", False)),
             profile=str(model_raw.get("profile", "cpu_demo")),
             use_fine_tuned_if_available=bool(model_raw.get("use_fine_tuned_if_available", True)),
@@ -227,6 +238,7 @@ def load_app_settings(path: str | Path = "configs/app.yaml") -> AppSettings:
         tracker=TrackerSettings(
             type=str(tracker_raw.get("type", "bytetrack")).strip().lower(),
             config_overrides=tracker_overrides,
+            head_config_overrides=dict(tracker_raw.get("head_config_overrides", {})),
         ),
         runtime=RuntimeSettings(
             frame_stride=max(1, int(runtime_raw.get("frame_stride", 1))),

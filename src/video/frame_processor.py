@@ -9,6 +9,7 @@ import numpy as np
 
 from src.vision.detector import Detector, NormalizedDetection
 from src.vision.crowd_analyzer import CrowdAnalyzer
+from src.vision.detection_filter import DetectionRegionFilter
 from src.vision.line_counter import LineCrossing, LineManager
 from src.vision.zone_manager import ZoneManager
 from src.vision.tracker import Tracker, normalize_tracks
@@ -45,6 +46,7 @@ class FrameProcessor:
         zone_manager: ZoneManager | None = None,
         line_managers: list[LineManager] | None = None,
         crowd_analyzer: CrowdAnalyzer | None = None,
+        detection_filter: DetectionRegionFilter | None = None,
         use_tracking: bool = True,
         resize_width: int | None = None,
     ) -> None:
@@ -54,6 +56,7 @@ class FrameProcessor:
         self.zone_manager = zone_manager
         self.line_managers = line_managers or []
         self.crowd_analyzer = crowd_analyzer
+        self.detection_filter = detection_filter
         self.use_tracking = use_tracking and tracker is not None
         self.resize_width = resize_width
         self._unique_track_ids_seen: set[int] = set()
@@ -87,6 +90,8 @@ class FrameProcessor:
                 timestamp=timestamp,
             )
             normalized = normalize_tracks(tracked)
+            if self.detection_filter is not None:
+                normalized = self.detection_filter.filter(normalized)
             return self._build_result(prepared, normalized, frame_index=frame_index, timestamp=timestamp)
 
         if self.detector is None:
@@ -97,7 +102,10 @@ class FrameProcessor:
             frame_index=frame_index,
             timestamp=timestamp,
         )
-        return self._build_result(prepared, result.detections, frame_index=frame_index, timestamp=timestamp)
+        detections = result.detections
+        if self.detection_filter is not None:
+            detections = self.detection_filter.filter(detections)
+        return self._build_result(prepared, detections, frame_index=frame_index, timestamp=timestamp)
 
     def _build_result(
         self,

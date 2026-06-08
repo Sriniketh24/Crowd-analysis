@@ -2,13 +2,13 @@
 
 ## 1. Short Project Status
 
-The current Indian Railway passenger counting project is a working MVP/pilot prototype. It processes a real public Mumbai suburban railway platform sample video, detects people, assigns tracking IDs, counts people in configured zones, counts directional line crossings, raises crowding alerts, logs analytics to SQLite, exports CSV reports, serves FastAPI endpoints, and provides a Streamlit web app for demo and review.
+The current Indian Railway passenger counting project is a working MVP/pilot prototype. It processes the selected public Pexels **People on Platform on Train Station** sample video, detects people, assigns tracking IDs, counts people in configured zones, counts directional line crossings, raises crowding alerts, logs analytics to SQLite, exports CSV reports, serves FastAPI endpoints, and provides a Streamlit web app for demo and review.
 
 This should be presented as a validated local prototype, not as a production-ready railway CCTV deployment. The next major step is to test on approved Indian Railway CCTV clips, label representative frames, fine-tune/validate the model, and harden live RTSP operation.
 
 ## 2. What Is Working Now
 
-- Real video input: verified on `data/input_videos/sample.mp4`, a real public Mumbai platform clip.
+- Real video input: `data/input_videos/sample.mp4`, the selected public Pexels railway platform clip with a CCTV-like elevated angle.
 - Passenger/person detection: YOLO detects people frame by frame.
 - Tracking IDs: tracked passengers are assigned ephemeral IDs for counting logic.
 - Zone occupancy: configured platform/concourse polygons report current occupancy.
@@ -22,7 +22,7 @@ This should be presented as a validated local prototype, not as a production-rea
 
 ## 3. What Demo Files To Show
 
-- `data/input_videos/sample.mp4` - original real public Mumbai platform sample video.
+- `data/input_videos/sample.mp4` - selected public Pexels railway platform sample video.
 - `data/outputs/demo.mp4` - processed/annotated output video.
 - `data/outputs/report.csv` - exported analytics report.
 - Streamlit app - run locally at `http://localhost:8501`.
@@ -66,7 +66,7 @@ python scripts/export_report.py \
    Say: "This is the local dashboard for the passenger counting prototype."
 
 2. Show the original video.
-   Say: "This is the raw platform video input. For the MVP I am using a real public Mumbai railway platform clip, not private CCTV."
+   Say: "This is the raw platform video input. For the MVP I am using real public railway platform footage with a CCTV-like elevated angle, not private CCTV."
 
 3. Click the run-analysis button if you want to process live during the meeting, or use the already generated output.
    Say: "The pipeline runs person detection, tracking, zone counting, line crossing, crowd alerting, and database logging."
@@ -135,7 +135,7 @@ Subject: Indian Railway Passenger Counting MVP - Demo Ready and Next Steps
 
 Dear [Boss Name],
 
-I have prepared the current version of the Indian Railway passenger counting system for review. It is a working MVP/pilot prototype that runs end-to-end on a real public Mumbai railway platform sample video.
+I have prepared the current version of the Indian Railway passenger counting system for review. It is a working MVP/pilot prototype that runs end-to-end on a real public railway platform sample video with a CCTV-like elevated angle.
 
 At this stage, the system can detect passengers, assign temporary tracking IDs, count zone occupancy, count IN/OUT line crossings, identify crowded areas using configurable thresholds, save analytics to SQLite, export a CSV report, expose FastAPI endpoints, and show the workflow in a Streamlit dashboard.
 
@@ -159,13 +159,13 @@ Regards,
 
 ## 10. Short WhatsApp/Teams Message
 
-Hi [Boss Name], I have the Indian Railway passenger counting MVP ready for review. It runs end-to-end on a real public Mumbai platform sample video: passenger detection, tracking IDs, zone occupancy, line crossing counts, crowd alerts, SQLite logging, CSV export, API, and Streamlit dashboard. It is still a pilot prototype, not production-ready. The next key step is approved real railway CCTV footage for validation, labeling, fine-tuning, and RTSP/live-camera testing. Please let me know what you want me to prioritize next: accuracy, RTSP integration, dashboard, or deployment.
+Hi [Boss Name], I have the Indian Railway passenger counting MVP ready for review. It runs end-to-end on a real public railway platform sample video with a CCTV-like elevated angle: passenger detection, tracking IDs, zone occupancy, line crossing counts, crowd alerts, SQLite logging, CSV export, API, and Streamlit dashboard. It is still a pilot prototype, not production-ready. The next key step is approved real railway CCTV footage for validation, labeling, fine-tuning, and RTSP/live-camera testing. Please let me know what you want me to prioritize next: accuracy, RTSP integration, dashboard, or deployment.
 
 ## 11. 3-Minute Verbal Demo Script
 
 "This is the current MVP for Indian Railway passenger counting and crowd analytics. I am showing it as a pilot prototype, not as a production-ready system yet.
 
-First, this is the raw input video. For this demo I am using a real public Mumbai suburban railway platform clip. The goal is to simulate what a platform CCTV stream would provide to the system.
+First, this is the raw input video. For this demo I am using real public railway platform footage with a CCTV-like elevated angle. It is not confirmed CCTV or Indian Railway CCTV, but it is useful for testing the pipeline before approved CCTV is available.
 
 When I run the analysis, the pipeline uses YOLO to detect passengers frame by frame. It then tracks detected people with temporary IDs so the system can reason about movement and avoid simple double-counting within the same scene.
 
@@ -187,7 +187,7 @@ Indian Railway platform passenger counting and crowd analytics MVP.
 
 ### Current Status
 
-Working local MVP/pilot prototype. Verified on 2026-06-02 with the full pipeline running on `data/input_videos/sample.mp4`, a real public Mumbai platform sample video. The latest end-to-end test report records 48 passing tests, 600 processed frames, a generated annotated video, populated SQLite database, CSV export, working FastAPI endpoints, and a working Streamlit dashboard.
+Working local MVP/pilot prototype. The canonical `data/input_videos/sample.mp4` is now the selected public Pexels railway platform sample with a CCTV-like elevated angle. The latest end-to-end test reports document the pipeline, generated annotated video, populated SQLite database, CSV export, working FastAPI endpoints, and working Streamlit dashboard.
 
 ### Capabilities Demonstrated
 

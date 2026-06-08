@@ -1,0 +1,7 @@
+segment_id,start_frame,end_frame,start_time_sec,end_time_sec,image_path,manual_count,notes
+seg_001,0,132,0.0,5.28,data/manual_ground_truth/review_frames/seg_001_frame_000066.jpg,,
+seg_002,133,265,5.32,10.6,data/manual_ground_truth/review_frames/seg_002_frame_000199.jpg,,
+seg_003,266,398,10.64,15.92,data/manual_ground_truth/review_frames/seg_003_frame_000332.jpg,,
+seg_004,399,531,15.96,21.24,data/manual_ground_truth/review_frames/seg_004_frame_000465.jpg,,
+seg_005,532,664,21.28,26.56,data/manual_ground_truth/review_frames/seg_005_frame_000598.jpg,,
+seg_006,665,802,26.6,32.08,data/manual_ground_truth/review_frames/seg_006_frame_000733.jpg,,

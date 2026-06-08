@@ -25,8 +25,8 @@ Plain-English explanation of the detection → tracking → zone counting → al
 Show this to your boss first. It requires no technical background.
 
 ### Section 2 — Input Video
-Displays `data/input_videos/sample.mp4` — the original unprocessed platform footage.
-Tell your boss: *"This is what the CCTV camera sees before the AI processes it."*
+Displays `data/input_videos/sample.mp4` — the selected Pexels **People on Platform on Train Station** clip.
+Tell your boss: *"This is CCTV-like public railway platform footage before the AI processes it. It is not confirmed CCTV."*
 
 ### Section 3 — Run Passenger Counting Analysis
 Click **▶ Run Passenger Counting Analysis** to process the video through the full AI pipeline.
@@ -77,7 +77,7 @@ Prioritised roadmap: live RTSP integration, fine-tuning, multi-camera dashboard,
 
 | File | Purpose | If missing |
 |------|---------|-----------|
-| `data/input_videos/sample.mp4` | Input video to display and process | Section 2 shows a warning with placement instructions |
+| `data/input_videos/sample.mp4` | Selected Pexels CCTV-like railway platform sample to display and process | Section 2 shows a warning with placement instructions |
 | `data/outputs/demo.mp4` | Annotated output video | Section 4 shows a "run analysis" prompt |
 | `data/outputs/analytics.db` | SQLite database of all analytics | Sections 5 & 6 show "run analysis first" message |
 | `data/outputs/report.csv` | Exported analytics CSV | Section 7 shows Generate button |
@@ -91,7 +91,7 @@ Suggested talking points:
 
 1. **Start with Section 1.** Read out the table. It tells the story in 30 seconds.
 
-2. **Show Section 2 (input video).** Say: *"This is raw CCTV footage from a platform environment. The AI processes this automatically."*
+2. **Show Section 2 (input video).** Say: *"This is real public railway platform footage with a CCTV-like elevated angle. The AI processes this automatically."*
 
 3. **Show Section 4 (annotated output).** Say: *"Here is what the AI sees. Every person is detected, given an ID, and tracked across the platform. The zones turn red when they get too crowded."*
 
@@ -99,7 +99,7 @@ Suggested talking points:
 
 5. **Show Section 6 (charts).** Point to the historical occupancy chart. Say: *"This shows crowd build-up over time — exactly what a station manager needs to plan their response."*
 
-6. **Close with Section 8.** Say: *"The system works end-to-end today on sample footage. The next step is connecting it to a real CCTV stream and fine-tuning the AI on Indian platform footage."*
+6. **Close with Section 8.** Say: *"The system works end-to-end today on the selected Pexels platform sample. The next step is connecting it to approved real CCTV and fine-tuning the AI on Indian platform footage."*
 
 ---
 

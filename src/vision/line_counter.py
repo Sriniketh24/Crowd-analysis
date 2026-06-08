@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from src.vision.zone_manager import PointStrategy, point_from_bbox
+
 Point = tuple[float, float]
 
 
@@ -61,6 +63,7 @@ class LineManager:
     """Stateful manager to count directional line crossings."""
 
     config: LineConfig
+    point_strategy: PointStrategy = "bottom_center"
     in_count: int = 0
     out_count: int = 0
     track_last_side: dict[int, int] = field(default_factory=dict)
@@ -86,10 +89,6 @@ class LineManager:
         x1, y1, x2, y2 = bbox_raw
         return (float(x1), float(y1), float(x2), float(y2))
 
-    def _bottom_center(self, bbox: tuple[float, float, float, float]) -> Point:
-        x1, _y1, x2, y2 = bbox
-        return ((x1 + x2) / 2.0, y2)
-
     def update(
         self,
         tracks: list[object],
@@ -105,7 +104,7 @@ class LineManager:
             if track_id is None or bbox is None:
                 continue
 
-            side = _line_side(self._bottom_center(bbox), self.config.start, self.config.end)
+            side = _line_side(point_from_bbox(bbox, self.point_strategy), self.config.start, self.config.end)
             previous = self.track_last_side.get(track_id)
             self.track_last_side[track_id] = side
 
@@ -148,6 +147,7 @@ def update_line_count(tracks: list[object], line_start: tuple[int, int], line_en
             start=(float(line_start[0]), float(line_start[1])),
             end=(float(line_end[0]), float(line_end[1])),
         ),
+        point_strategy="bottom_center",
         in_count=current.in_count,
         out_count=current.out_count,
         track_last_side=dict(current.track_last_side),

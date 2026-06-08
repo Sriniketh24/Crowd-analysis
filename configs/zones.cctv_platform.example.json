@@ -1,0 +1,61 @@
+{
+  "camera_id": "demo_platform",
+  "frame_width": 1280,
+  "frame_height": 720,
+  "_note": "Calibrated for data/input_videos/cctv_platform_sample.mp4 / sample.mp4, the selected Pexels railway platform clip. This is real public platform footage with a CCTV-like elevated/static angle, not confirmed CCTV.",
+  "zones": [
+    {
+      "id": "main_platform_waiting",
+      "name": "Main Platform Waiting Area",
+      "polygon": [[435, 720], [500, 520], [590, 315], [755, 170], [965, 95], [1125, 110], [1005, 215], [875, 310], [790, 540], [735, 720]],
+      "warning_threshold": 4,
+      "critical_threshold": 9
+    },
+    {
+      "id": "platform_movement_path",
+      "name": "Platform Movement Path",
+      "polygon": [[145, 720], [315, 610], [430, 450], [535, 260], [650, 155], [770, 125], [710, 250], [640, 390], [565, 560], [535, 720]],
+      "warning_threshold": 3,
+      "critical_threshold": 7
+    },
+    {
+      "id": "train_side_edge",
+      "name": "Train-Side Platform Edge",
+      "polygon": [[735, 720], [775, 555], [820, 395], [875, 235], [965, 125], [1080, 125], [1010, 210], [925, 285], [850, 445], [800, 625], [775, 720]],
+      "warning_threshold": 2,
+      "critical_threshold": 6
+    }
+  ],
+  "lines": [
+    {
+      "id": "central_flow_line",
+      "name": "Central Platform Flow Line",
+      "start": [560, 495],
+      "end": [875, 360],
+      "in_label": "TOWARD_TRAIN",
+      "out_label": "AWAY_FROM_TRAIN",
+      "direction_hint": "Crossing from the movement path toward the train-side edge counts as TOWARD_TRAIN for this sample."
+    }
+  ],
+  "detection_filters": {
+    "head": {
+      "point_strategy": "center",
+      "min_width": 7,
+      "min_height": 7,
+      "max_width": 75,
+      "max_height": 75,
+      "min_aspect_ratio": 0.45,
+      "max_aspect_ratio": 1.8,
+      "include_polygons": [
+        [[135, 720], [255, 585], [410, 500], [520, 345], [640, 190], [790, 115], [1085, 85], [1145, 125], [1000, 235], [910, 390], [825, 620], [785, 720]],
+        [[145, 720], [205, 625], [295, 540], [395, 480], [455, 510], [350, 625], [285, 720]],
+        [[760, 140], [930, 95], [1125, 90], [1100, 165], [975, 245], [850, 290]]
+      ],
+      "ignore_polygons": [
+        [[875, 270], [1135, 300], [1130, 560], [875, 560]],
+        [[1090, 0], [1280, 0], [1280, 720], [1140, 720]],
+        [[0, 0], [1280, 0], [1280, 70], [0, 70]]
+      ]
+    }
+  }
+}

@@ -1,4 +1,4 @@
-# Head-detection dataset (single class) for YOLO fine-tuning.
+# RPEE-only head-detection dataset (single class) for YOLO fine-tuning.
 #
 # Primary dataset: RPEE-Heads (Railway Platforms and Event Entrances - Heads)
 #   Paper:   https://arxiv.org/abs/2411.18164  (IEEE: https://ieeexplore.ieee.org/document/10973050)
@@ -11,6 +11,10 @@
 #   images/val    labels/val     (official RPEE-Heads val split)
 # The official RPEE-Heads *test* split is held out (kept under
 # data/head_datasets/raw/rpee_heads) for final detector evaluation.
+#
+# CrowdHuman and SCUT-HEAD are supplemental and intentionally excluded here.
+# Use configs/head_dataset_mixed.example.yaml only after preparing those local
+# supplemental YOLO folders.
 #
 # Single class only: 0 = head.
 

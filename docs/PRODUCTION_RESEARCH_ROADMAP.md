@@ -66,7 +66,7 @@ The project codebase implements a **working single-stream MVP**:
 
 Current verification on 2026-06-02:
 
-- End-to-end pipeline ran on a **real public Mumbai suburban railway platform clip** (`data/input_videos/sample.mp4`, Pexels, 1920×1080, 20 s, 600 frames).
+- The canonical sample is now a **real public Pexels railway platform clip** (`data/input_videos/sample.mp4`, 1280×720, 32.13 s, 803 frames) with a CCTV-like elevated/static angle. It is not confirmed CCTV and not Indian Railway-specific.
 - 48 unit tests passed; analytics logic is deterministic and tested with synthetic tracks.
 - The verified demo used pretrained `yolo11n.pt` on CPU. This demonstrates pipeline mechanics, not production accuracy.
 - Zone occupancy, line-crossing events, crowd alerts, SQLite logging, report export, API reads, and dashboard flow all work on the sample clip.
@@ -75,7 +75,7 @@ Current verification on 2026-06-02:
 
 | Gap | Why it matters |
 |-----|----------------|
-| **No approved live Indian Railway CCTV tested** | Demo video is a public Mumbai platform clip, not an authorized RTSP feed from a deployed station CCTV system |
+| **No approved live Indian Railway CCTV tested** | Demo video is public Pexels railway platform footage, not an authorized RTSP feed from a deployed station CCTV system |
 | **No measured accuracy on platform footage** | No precision/recall, counting MAE, or ID-switch metrics on approved station video |
 | **No fine-tuning performed** | Pretrained COCO weights only; no labeled Indian platform dataset exists in-repo |
 | **No production RTSP hardening** | Basic OpenCV retry/FPS controls exist, but there is no proven long-running worker, stream SLA, or multi-camera health supervisor |
