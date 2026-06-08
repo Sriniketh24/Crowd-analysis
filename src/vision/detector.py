@@ -16,14 +16,19 @@ DEFAULT_MODEL_CANDIDATES: tuple[str, ...] = ("yolo11s.pt", "yolo11n.pt", "yolov8
 DEFAULT_PERSON_CLASS_ID = 0
 FINE_TUNED_MODEL_PATH = Path("models/fine_tuned/best.pt")
 DEFAULT_HEAD_MODEL_PATH = Path("models/fine_tuned/head_detector/weights/best.pt")
-DetectorMode = Literal["body", "head"]
+DetectorMode = Literal["body", "head", "hybrid"]
+
+# Readable per-detection labels used by hybrid fusion so reports/overlays can
+# distinguish the detection source even though they are tracked as one stream.
+BODY_PASSENGER_LABEL = "body/passenger"
+HEAD_PASSENGER_LABEL = "head/passenger"
 
 
 def normalize_detector_mode(detector_mode: str) -> DetectorMode:
     """Validate and normalize detector mode strings."""
     normalized = detector_mode.strip().lower()
-    if normalized not in {"body", "head"}:
-        raise ValueError("detector_mode must be either 'body' or 'head'")
+    if normalized not in {"body", "head", "hybrid"}:
+        raise ValueError("detector_mode must be one of 'body', 'head', or 'hybrid'")
     return normalized  # type: ignore[return-value]
 
 
@@ -39,8 +44,13 @@ def class_name_for_mode(detector_mode: str, model_class_name: str | None = None)
     """Return the label exposed to analytics and overlays for a detector mode."""
     mode = normalize_detector_mode(detector_mode)
     if mode == "head":
-        return "head/passenger"
+        return HEAD_PASSENGER_LABEL
     return "person/passenger" if model_class_name in (None, "", "person") else model_class_name
+
+
+def hybrid_class_name_for_source(source_type: str) -> str:
+    """Return the readable fused label for a hybrid detection source."""
+    return HEAD_PASSENGER_LABEL if source_type == "head" else BODY_PASSENGER_LABEL
 
 
 @dataclass(slots=True)
@@ -54,6 +64,10 @@ class NormalizedDetection:
     frame_index: int
     timestamp: float
     detector_mode: DetectorMode = "body"
+    # Source of the detection within a fused/hybrid stream ("body" or "head").
+    # Defaults to None for single-mode pipelines, where detector_mode already
+    # encodes the source. Reports/annotations use this to label fused output.
+    source_type: str | None = None
 
 
 @dataclass(slots=True)
