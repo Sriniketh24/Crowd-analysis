@@ -6,6 +6,7 @@ import sqlite3
 
 import pytest
 
+import scripts.compare_manual_counts as compare
 from scripts.compare_manual_counts import (
     ManualSegment,
     SegmentAverage,
@@ -49,6 +50,9 @@ def _create_comparison_db(path) -> None:
                 (3, "body", "2026-06-08 11:00:00", "2026-06-08 11:01:00", 3),
                 (4, "head", "2026-06-08 12:00:00", "2026-06-08 12:01:00", 0),
                 (5, "head", "2026-06-08 13:00:00", "2026-06-08 13:01:00", 3),
+                (6, "hybrid", "2026-06-08 14:00:00", None, None),
+                (7, "hybrid", "2026-06-08 15:00:00", "2026-06-08 15:01:00", 0),
+                (8, "hybrid", "2026-06-08 16:00:00", "2026-06-08 16:01:00", 3),
             ],
         )
         conn.executemany(
@@ -68,6 +72,10 @@ def _create_comparison_db(path) -> None:
                 (5, "head", 0, 0.0, 5),
                 (5, "head", 1, 1.0, 7),
                 (5, "head", 2, 2.0, 9),
+                (6, "hybrid", 0, 0.0, 999),
+                (8, "hybrid", 0, 0.0, 14),
+                (8, "hybrid", 1, 1.0, 16),
+                (8, "hybrid", 2, 2.0, 18),
             ],
         )
 
@@ -124,6 +132,31 @@ def test_latest_completed_session_ignores_unfinished_and_zero_frame_sessions(tmp
     assert _latest_completed_session_id(db_path, "head") == 5
 
 
+def test_latest_completed_session_selects_hybrid_ignoring_unfinished_and_zero_frame(tmp_path) -> None:
+    db_path = tmp_path / "analytics.db"
+    _create_comparison_db(db_path)
+
+    # Session 6 is unfinished (ended_at NULL), 7 is zero-frame; 8 is the valid one.
+    assert _latest_completed_session_id(db_path, "hybrid") == 8
+
+
+def test_segment_average_count_uses_latest_completed_hybrid_session_only(tmp_path) -> None:
+    db_path = tmp_path / "analytics.db"
+    _create_comparison_db(db_path)
+    segment = ManualSegment(
+        segment_id="seg",
+        start_frame=0,
+        end_frame=2,
+        start_time_sec=None,
+        end_time_sec=None,
+        manual_count=15,
+    )
+
+    average = _segment_average_count(db_path, segment, detector_mode="hybrid")
+
+    assert average == SegmentAverage(session_id=8, avg_count=16.0)
+
+
 def test_segment_average_count_uses_latest_completed_session_only(tmp_path) -> None:
     db_path = tmp_path / "analytics.db"
     _create_comparison_db(db_path)
@@ -164,7 +197,7 @@ def test_error_stats_handles_normal_zero_and_missing_counts() -> None:
     assert _error_stats(None, 8.0) == (None, None)
 
 
-def test_comparison_row_writes_body_and_head_segment_metrics() -> None:
+def test_comparison_row_writes_body_head_and_hybrid_segment_metrics() -> None:
     segment = ManualSegment(
         segment_id="seg",
         start_frame=0,
@@ -179,12 +212,74 @@ def test_comparison_row_writes_body_and_head_segment_metrics() -> None:
         segment,
         SegmentAverage(session_id=3, avg_count=10.0),
         SegmentAverage(session_id=5, avg_count=6.0),
+        SegmentAverage(session_id=8, avg_count=9.0),
     )
 
+    # Detection volume columns.
     assert row["manual_count"] == "8.00"
     assert row["body_avg_count"] == "10.00"
     assert row["head_avg_count"] == "6.00"
+    assert row["hybrid_avg_count"] == "9.00"
+    # Measured accuracy columns for all three modes.
     assert row["body_absolute_error"] == "2.00"
-    assert row["body_percentage_error"] == "25.00"
     assert row["head_absolute_error"] == "2.00"
+    assert row["hybrid_absolute_error"] == "1.00"
+    assert row["body_percentage_error"] == "25.00"
     assert row["head_percentage_error"] == "25.00"
+    assert row["hybrid_percentage_error"] == "12.50"
+    assert row["hybrid_session_id"] == "8"
+
+
+def test_comparison_row_blanks_missing_hybrid_session() -> None:
+    segment = ManualSegment(
+        segment_id="seg",
+        start_frame=0,
+        end_frame=2,
+        start_time_sec=None,
+        end_time_sec=None,
+        manual_count=8.0,
+    )
+
+    row = _comparison_row(
+        segment,
+        SegmentAverage(session_id=3, avg_count=10.0),
+        SegmentAverage(session_id=5, avg_count=6.0),
+        None,
+    )
+
+    assert row["hybrid_session_id"] == ""
+    assert row["hybrid_avg_count"] == ""
+    assert row["hybrid_absolute_error"] == ""
+    assert row["hybrid_percentage_error"] == ""
+
+
+def test_main_reports_no_accuracy_when_manual_counts_empty(tmp_path, monkeypatch, capsys) -> None:
+    manual_csv = tmp_path / "manual.csv"
+    manual_csv.write_text(
+        "\n".join(
+            [
+                "segment_id,start_frame,end_frame,start_time_sec,end_time_sec,manual_count,notes",
+                "blank,0,10,,,,no count entered",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    output_csv = tmp_path / "comparison.csv"
+    monkeypatch.setattr(
+        compare.sys,
+        "argv",
+        [
+            "compare_manual_counts.py",
+            "--manual-csv",
+            str(manual_csv),
+            "--output-csv",
+            str(output_csv),
+        ],
+    )
+
+    compare.main()
+
+    captured = capsys.readouterr().out.lower()
+    assert "no accuracy" in captured
+    # No fabricated accuracy output is written when there are no manual counts.
+    assert not output_csv.exists()

@@ -207,6 +207,67 @@ def test_hybrid_detector_fuses_roi_crops() -> None:
     assert body_det.bbox == (200.0, 450.0, 300.0, 650.0)
 
 
+def test_hybrid_detector_runs_body_full_frame_when_near_body_empty() -> None:
+    """Empty near_body_polygons -> body detector runs on the whole frame.
+
+    The body stub must be called once on a frame equal to the input frame
+    (offset 0,0) and its bbox returned unchanged, even though the box lies well
+    outside the (here unused) near_body region. The head detector stays
+    restricted to far_head_polygons.
+    """
+    frame = np.zeros((720, 1280, 3), dtype=np.uint8)
+    far_head = [[(600.0, 100.0), (900.0, 100.0), (900.0, 300.0), (600.0, 300.0)]]
+    roi = HybridRoiConfig(near_body_polygons=[], far_head_polygons=far_head)
+
+    # Body bbox far from any near zone; bottom-center ~ (1050, 300).
+    body_stub = _StubDetector([_det((1000.0, 50.0, 1100.0, 300.0), source="body")])
+    head_stub = _StubDetector([])
+
+    detector = HybridDetector(body_stub, head_stub, roi, crop_padding=0)
+    fused = detector.detect(frame, frame_index=0, timestamp=0.0)
+
+    # Body detector saw the full, unmodified frame (offset 0,0).
+    assert body_stub.last_frame_shape == frame.shape
+    body_dets = [d for d in fused if d.source_type == "body"]
+    assert len(body_dets) == 1
+    assert body_dets[0].bbox == (1000.0, 50.0, 1100.0, 300.0)
+
+
+def test_hybrid_detector_suppresses_far_head_overlapping_far_body() -> None:
+    """A far head whose center is in the upper 45% of a body box is dropped."""
+    frame = np.zeros((720, 1280, 3), dtype=np.uint8)
+    far_head = [[(600.0, 100.0), (900.0, 100.0), (900.0, 300.0), (600.0, 300.0)]]
+    roi = HybridRoiConfig(near_body_polygons=[], far_head_polygons=far_head)
+
+    # Full-frame body in the far region; upper 45% spans y in [120, 192].
+    body_stub = _StubDetector([_det((700.0, 120.0, 760.0, 280.0), source="body")])
+    # Head crop origin (600, 100); detection center (730, 180) sits inside the
+    # body's upper-body region -> suppressed by fusion. The body remains.
+    head_stub = _StubDetector([_det((110.0, 60.0, 150.0, 100.0), source="head")])
+
+    detector = HybridDetector(body_stub, head_stub, roi, crop_padding=0)
+    fused = detector.detect(frame, frame_index=0, timestamp=0.0)
+
+    assert [d.source_type for d in fused] == ["body"]
+
+
+def test_hybrid_detector_keeps_far_head_without_body() -> None:
+    """A far head with no overlapping body survives fusion."""
+    frame = np.zeros((720, 1280, 3), dtype=np.uint8)
+    far_head = [[(600.0, 100.0), (900.0, 100.0), (900.0, 300.0), (600.0, 300.0)]]
+    roi = HybridRoiConfig(near_body_polygons=[], far_head_polygons=far_head)
+
+    # Body is far from the head, no overlap.
+    body_stub = _StubDetector([_det((100.0, 450.0, 200.0, 690.0), source="body")])
+    # Head crop origin (600, 100); detection center (730, 200) -> kept.
+    head_stub = _StubDetector([_det((110.0, 80.0, 150.0, 120.0), source="head")])
+
+    detector = HybridDetector(body_stub, head_stub, roi, crop_padding=0)
+    fused = detector.detect(frame, frame_index=0, timestamp=0.0)
+
+    assert sorted(d.source_type for d in fused) == ["body", "head"]
+
+
 # --- unified tracking after fusion -------------------------------------------
 
 
@@ -292,6 +353,15 @@ def test_load_hybrid_roi_config_parses_zone_groups() -> None:
     assert len(roi.far_head_polygons[0]) >= 3
 
 
+def test_load_hybrid_roi_config_parses_named_cctv_roi_group() -> None:
+    roi = load_hybrid_roi_config("configs/zones.hybrid_cctv_platform.example.json")
+    # near_body_zone is intentionally empty here: the body detector runs
+    # full-frame in hybrid mode (Fix 1). Only far_head_zone is populated.
+    assert roi.near_body_polygons == []
+    assert len(roi.far_head_polygons) == 1
+    assert roi.far_head_polygons[0][0] == (135.0, 720.0)
+
+
 def test_load_hybrid_roi_config_scales_to_target() -> None:
     roi = load_hybrid_roi_config(
         "configs/zones.hybrid_platform.example.json",
@@ -328,3 +398,75 @@ def test_run_video_demo_accepts_hybrid_cli(monkeypatch: pytest.MonkeyPatch) -> N
     assert args.detector_mode == "hybrid"
     assert args.body_model == "yolo11n.pt"
     assert args.head_model.endswith("best.pt")
+
+
+def test_run_comparison_demo_defaults_to_hybrid_sample_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    from scripts import run_comparison_demo
+
+    monkeypatch.setattr(sys, "argv", ["run_comparison_demo.py"])
+    args = run_comparison_demo.parse_args()
+    assert args.source == "data/input_videos/sample.mp4"
+    assert args.zones_config.as_posix() == "configs/zones.hybrid_cctv_platform.example.json"
+
+
+# --- build_hybrid_models forces full-frame body wiring (Fix 1) ---------------
+
+
+def test_build_hybrid_models_forces_full_frame_body(monkeypatch: pytest.MonkeyPatch) -> None:
+    """build_hybrid_models must zero out near_body_polygons regardless of config.
+
+    This proves the config->detector wiring: even a config that DOES define a
+    populated near_body_zone (zones.hybrid_platform.example.json) must end up
+    with an empty near_body so the body detector runs full-frame, while the
+    far_head zone is preserved untouched. Fails first if the override line in
+    build_hybrid_models is removed (near_body would then be non-empty).
+    """
+    from scripts import run_video_demo
+    from src.config import AppSettings
+
+    # Sanity: the chosen config genuinely has a non-empty near_body zone, so the
+    # assertion below can only pass because build_hybrid_models clears it.
+    raw_roi = load_hybrid_roi_config("configs/zones.hybrid_platform.example.json")
+    assert len(raw_roi.near_body_polygons) >= 1
+    assert len(raw_roi.far_head_polygons) >= 1
+
+    class _NoOpDetector:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
+    class _NoOpTracker:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
+    # Avoid loading real YOLO weights / trackers.
+    monkeypatch.setattr(run_video_demo, "Detector", _NoOpDetector)
+    monkeypatch.setattr(run_video_demo, "HybridTracker", _NoOpTracker)
+
+    settings = AppSettings()
+    effective: dict[str, object] = {
+        "body_model": "yolo11n.pt",
+        "head_model": "models/fine_tuned/head_detector/weights/best.pt",
+        "device": "cpu",
+        "body_confidence": 0.3,
+        "head_confidence": 0.15,
+        "iou": 0.5,
+        "body_imgsz": 640,
+        "head_imgsz": 1536,
+        "augment": False,
+        "body_max_det": 300,
+        "head_max_det": 1000,
+        "zones_config": "configs/zones.hybrid_platform.example.json",
+    }
+
+    hybrid_detector, _ = run_video_demo.build_hybrid_models(
+        settings,
+        effective,
+        target_width=None,
+        target_height=None,
+    )
+
+    # Body runs full-frame: near zone cleared despite the config defining one.
+    assert hybrid_detector.roi_config.near_body_polygons == []
+    # Head stays restricted to the config's far_head zone.
+    assert hybrid_detector.roi_config.far_head_polygons == raw_roi.far_head_polygons
+    assert len(hybrid_detector.roi_config.far_head_polygons) >= 1

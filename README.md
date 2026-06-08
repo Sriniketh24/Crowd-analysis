@@ -138,20 +138,32 @@ can catch these passengers because the head is often visible even when the body 
 The bundled `sample.mp4` is CCTV-like public platform footage intended to exercise this
 comparison; it is not approved Indian Railway CCTV.
 
-The system supports two modes:
+The system supports three modes:
 
 | Mode | Detector | Point strategy | Use when |
 |------|----------|----------------|----------|
 | `body` | Pretrained YOLO (person) | Bottom-centre of bounding box | Passengers are close and clearly visible |
 | `head` | Fine-tuned YOLO (head, Colab-trained) | Centre of head box | Passengers are distant, occluded, or in dense crowds |
+| `hybrid` | Body detector in near ROI + head detector in far ROI | Per-detection anchor | One CCTV view has both near full bodies and far/occluded passengers |
 
-**Run both modes and compare results:**
+**Run body, head, and hybrid modes on the same sample:**
 
 ```bash
 python scripts/run_comparison_demo.py \
   --source data/input_videos/sample.mp4 \
-  --zones-config configs/zones.example.json
+  --zones-config configs/zones.hybrid_cctv_platform.example.json
 ```
+
+This writes:
+
+- `data/outputs/body_demo.mp4` and `data/outputs/body_analytics.db`
+- `data/outputs/head_demo.mp4` and `data/outputs/head_analytics.db`
+- `data/outputs/hybrid_demo.mp4` and `data/outputs/hybrid_analytics.db`
+
+The hybrid sample config uses normal analytics `zones`, normal counting `lines`,
+and `hybrid_detection_rois` split into `near_body_zone` and `far_head_zone`.
+See `docs/HYBRID_BODY_HEAD_DETECTION_PLAN.md` for the rationale and validation
+limits.
 
 **Or run each mode separately:**
 
@@ -160,7 +172,7 @@ python scripts/run_comparison_demo.py \
 python scripts/run_video_demo.py \
   --source data/input_videos/sample.mp4 \
   --output data/outputs/body_demo.mp4 \
-  --zones-config configs/zones.example.json \
+  --zones-config configs/zones.hybrid_cctv_platform.example.json \
   --db data/outputs/body_analytics.db \
   --detector-mode body
 
@@ -168,16 +180,82 @@ python scripts/run_video_demo.py \
 python scripts/run_video_demo.py \
   --source data/input_videos/sample.mp4 \
   --output data/outputs/head_demo.mp4 \
-  --zones-config configs/zones.example.json \
+  --zones-config configs/zones.hybrid_cctv_platform.example.json \
   --db data/outputs/head_analytics.db \
   --detector-mode head \
   --model models/fine_tuned/head_detector/weights/best.pt
+
+# Hybrid mode (requires fine-tuned best.pt)
+python scripts/run_video_demo.py \
+  --source data/input_videos/sample.mp4 \
+  --output data/outputs/hybrid_demo.mp4 \
+  --zones-config configs/zones.hybrid_cctv_platform.example.json \
+  --db data/outputs/hybrid_analytics.db \
+  --detector-mode hybrid \
+  --head-model models/fine_tuned/head_detector/weights/best.pt
 ```
 
 The head model was fine-tuned in Google Colab (not locally) and is located at
 `models/fine_tuned/head_detector/weights/best.pt`. See
 `docs/HEAD_MODEL_TRAINING_REPORT.md` and `docs/BODY_VS_HEAD_INTEGRATION_REPORT.md`
 for details.
+
+### Measuring accuracy: body vs head vs hybrid against manual counts
+
+The three demos above only produce **detection volume** — how many boxes each
+mode draws per frame. That is an operational observation, **not** accuracy. To
+measure accuracy you must supply manual ground-truth counts; the bundled
+`sample.mp4` is CCTV-like public footage and is **not** a dense/occluded crowd
+validation clip, so any numbers from it are indicative only.
+
+**Step 1 — generate review frames and a blank count template:**
+
+```bash
+python scripts/create_manual_count_frames.py \
+  --source data/input_videos/sample.mp4 \
+  --out-dir data/manual_ground_truth/review_frames \
+  --output-csv data/manual_ground_truth/review_counts.csv \
+  --num-segments 6
+```
+
+**Step 2 — fill in the counts by eye.** Open each image listed in the CSV's
+`image_path` column, count the passengers visible in that segment, and type the
+number into the `manual_count` column. Leave a row blank if you cannot count it
+confidently (blank rows are skipped, never guessed). Do not edit the
+`segment_id` / frame / time columns — the comparison relies on them.
+
+**Step 3 — run all three modes on the same segments** (if not already done):
+
+```bash
+python scripts/run_comparison_demo.py \
+  --source data/input_videos/sample.mp4 \
+  --zones-config configs/zones.hybrid_cctv_platform.example.json
+```
+
+**Step 4 — rerun the comparison against your filled-in counts:**
+
+```bash
+python scripts/compare_manual_counts.py \
+  --manual-csv data/manual_ground_truth/review_counts.csv \
+  --body-db data/outputs/body_analytics.db \
+  --head-db data/outputs/head_analytics.db \
+  --hybrid-db data/outputs/hybrid_analytics.db \
+  --output-csv data/outputs/manual_count_comparison.csv
+```
+
+The output `data/outputs/manual_count_comparison.csv` keeps **detection volume**
+and **measured accuracy** in separate column groups:
+
+- Detection volume (operational, always present): `body_avg_count`,
+  `head_avg_count`, `hybrid_avg_count`.
+- Measured accuracy (only because you supplied `manual_count`):
+  `body_absolute_error`, `head_absolute_error`, `hybrid_absolute_error`,
+  `body_percentage_error`, `head_percentage_error`, `hybrid_percentage_error`.
+
+Each mode's average is read from its **latest completed** run session (unfinished
+or zero-frame sessions are ignored). If `manual_count` is blank for every row,
+the script reports that **no accuracy can be measured** and writes nothing —
+it never fabricates ground truth.
 
 ---
 
@@ -223,7 +301,9 @@ with the virtual environment activated.
 | Byte-compile all source (sanity check) | `python -m compileall src scripts` |
 | Run the test suite | `pytest` |
 | Video demo help | `python scripts/run_video_demo.py --help` |
-| Body/head comparison help | `python scripts/run_comparison_demo.py --help` |
+| Body/head/hybrid comparison help | `python scripts/run_comparison_demo.py --help` |
+| Generate manual-count template | `python scripts/create_manual_count_frames.py --help` |
+| Manual-count accuracy comparison | `python scripts/compare_manual_counts.py --help` |
 | Head detector training help | `python scripts/train_head_detector.py --help` |
 | Head detector evaluation help | `python scripts/evaluate_head_detector.py --help` |
 | Export report help | `python scripts/export_report.py --help` |
@@ -418,7 +498,7 @@ Use this to confirm the system is demo-ready end to end:
 - [ ] **Setup complete** — `pip install -r requirements.txt` succeeds and
       `python -m compileall src` reports no errors.
 - [ ] **Run video demo** —
-      `python scripts/run_video_demo.py --source data/input_videos/sample.mp4 --output data/outputs/demo.mp4 --zones-config configs/zones.example.json --db data/outputs/analytics.db`
+      `python3 scripts/run_video_demo.py --source data/input_videos/sample.mp4 --output data/outputs/demo.mp4 --zones-config configs/zones.example.json --db data/outputs/analytics.db`
       produces `data/outputs/demo.mp4`.
 - [ ] **Run dashboard** — `streamlit run src/dashboard/streamlit_app.py` opens at
       <http://localhost:8501> and shows zones, lines, alerts, and the annotated video.

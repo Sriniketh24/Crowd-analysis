@@ -14,8 +14,8 @@ model:
   imgsz: 640
   augment: false
   max_det: 300
-  head_confidence: 0.25
-  head_imgsz: 1280
+  head_confidence: 0.15
+  head_imgsz: 1536
   head_max_det: 1000
   half: false
   profile: cpu_demo

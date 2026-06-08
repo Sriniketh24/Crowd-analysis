@@ -503,6 +503,11 @@ def build_hybrid_models(
         target_width=target_width,
         target_height=target_height,
     )
+    # The body detector always runs full-frame in hybrid mode so passengers
+    # outside any near zone are still detected; fusion de-dupes overlapping far
+    # heads. Empty near_body_polygons disables both the ROI crop and the polygon
+    # post-filter. The head detector stays restricted to far_head_polygons.
+    roi_config.near_body_polygons = []
     hybrid_detector = HybridDetector(
         body_detector=body_detector,
         head_detector=head_detector,

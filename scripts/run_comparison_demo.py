@@ -1,4 +1,4 @@
-"""Run full-body and head-based passenger detection demos on the same video."""
+"""Run body, head, and hybrid passenger detection demos on the same video."""
 
 from __future__ import annotations
 
@@ -18,24 +18,26 @@ BODY_OUTPUT = Path("data/outputs/body_demo.mp4")
 BODY_DB = Path("data/outputs/body_analytics.db")
 HEAD_OUTPUT = Path("data/outputs/head_demo.mp4")
 HEAD_DB = Path("data/outputs/head_analytics.db")
+HYBRID_OUTPUT = Path("data/outputs/hybrid_demo.mp4")
+HYBRID_DB = Path("data/outputs/hybrid_analytics.db")
 
 
 def parse_args() -> argparse.Namespace:
     """Parse CLI arguments for the comparison demo."""
     parser = argparse.ArgumentParser(
-        description="Run body and head passenger detection demos on the same input video."
+        description="Run body, head, and hybrid passenger detection demos on the same input video."
     )
     parser.add_argument(
         "--source",
         type=str,
-        required=True,
+        default="data/input_videos/sample.mp4",
         help="Input source video path, webcam index, or stream URL.",
     )
     parser.add_argument(
         "--zones-config",
         type=Path,
-        default=Path("configs/zones.cctv_platform.example.json"),
-        help="Path to the zone/line JSON config used by both modes.",
+        default=Path("configs/zones.hybrid_cctv_platform.example.json"),
+        help="Path to the zone/line/ROI JSON config used by all modes.",
     )
     parser.add_argument("--body-model", type=str, default=None, help="Optional body YOLO weights.")
     parser.add_argument(
@@ -112,7 +114,7 @@ def _base_args(args: argparse.Namespace, *, output: Path, db: Path, mode: str) -
 
 
 def main() -> None:
-    """Run body first, then head when the Colab-trained model is available."""
+    """Run body first, then head and hybrid when the head model is available."""
     args = parse_args()
 
     body_args = _base_args(args, output=BODY_OUTPUT, db=BODY_DB, mode="body")
@@ -128,9 +130,11 @@ def main() -> None:
 
     head_model = Path(args.head_model)
     head_code = 0
+    hybrid_code = 0
     if not head_model.exists():
         print(
-            "\nHead detector model not found; body mode already ran if the source was valid.\n"
+            "\nHead detector model not found; body mode already ran if the source was valid. "
+            "Head and hybrid modes require the imported head detector.\n"
             f"Expected Colab-trained best.pt at: {DEFAULT_HEAD_MODEL_PATH}\n"
             f"Requested head model path: {args.head_model}\n"
             "Place the imported Colab weights there or pass --head-model with an existing file."
@@ -148,8 +152,34 @@ def main() -> None:
             head_args.extend(["--max-det", str(head_max_det)])
         head_code = _run_video_demo(head_args)
 
-    if body_code != 0 or head_code != 0:
-        raise SystemExit(body_code or head_code)
+        hybrid_args = _base_args(args, output=HYBRID_OUTPUT, db=HYBRID_DB, mode="hybrid")
+        if args.body_model:
+            hybrid_args.extend(["--body-model", args.body_model])
+        hybrid_args.extend(["--head-model", str(head_model)])
+        if args.body_imgsz is not None:
+            hybrid_args.extend(["--body-imgsz", str(args.body_imgsz)])
+        elif args.imgsz is not None:
+            hybrid_args.extend(["--body-imgsz", str(args.imgsz)])
+        if args.head_imgsz is not None:
+            hybrid_args.extend(["--head-imgsz", str(args.head_imgsz)])
+        elif args.imgsz is not None:
+            hybrid_args.extend(["--head-imgsz", str(args.imgsz)])
+        if args.body_max_det is not None:
+            hybrid_args.extend(["--body-max-det", str(args.body_max_det)])
+        elif args.max_det is not None:
+            hybrid_args.extend(["--body-max-det", str(args.max_det)])
+        if args.head_max_det is not None:
+            hybrid_args.extend(["--head-max-det", str(args.head_max_det)])
+        elif args.max_det is not None:
+            hybrid_args.extend(["--head-max-det", str(args.max_det)])
+        if args.head_confidence is not None:
+            hybrid_args.extend(["--head-confidence", str(args.head_confidence)])
+        if args.confidence is not None:
+            hybrid_args.extend(["--body-confidence", str(args.confidence)])
+        hybrid_code = _run_video_demo(hybrid_args)
+
+    if body_code != 0 or head_code != 0 or hybrid_code != 0:
+        raise SystemExit(body_code or head_code or hybrid_code)
 
 
 if __name__ == "__main__":

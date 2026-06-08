@@ -169,7 +169,14 @@ class HybridDetector:
         frame_index: int = 0,
         timestamp: float | None = None,
     ) -> list[NormalizedDetection]:
-        """Detect bodies and heads on their ROI crops and return fused output."""
+        """Detect bodies and heads and return fused output.
+
+        The body detector runs on whatever ``near_body_polygons`` describes: an
+        empty list disables both the ROI crop and the polygon post-filter, so the
+        body detector runs on the full frame (the hybrid default, configured in
+        ``build_hybrid_models``). A non-empty list crops the body detector to that
+        ROI. The head detector is always restricted to ``far_head_polygons``.
+        """
         body_detections = run_detector_in_rois(
             self.body_detector,
             frame,
@@ -267,7 +274,12 @@ def load_hybrid_roi_config(
     target_width: int | None = None,
     target_height: int | None = None,
 ) -> HybridRoiConfig:
-    """Load near_body_zone / far_head_zone ROI groups from a zones JSON file."""
+    """Load hybrid ROI groups from a zones JSON file.
+
+    Existing configs may define top-level ``near_body_zone`` and
+    ``far_head_zone`` fields. Newer configs can group the same fields under
+    ``hybrid_detection_rois`` for clearer documentation.
+    """
     raw = json.loads(Path(config_path).read_text(encoding="utf-8"))
     if not isinstance(raw, dict):
         raise ValueError(f"Invalid zones config format: {config_path}")
@@ -277,6 +289,13 @@ def load_hybrid_roi_config(
     scale_x = (target_width / ref_width) if target_width and ref_width else 1.0
     scale_y = (target_height / ref_height) if target_height and ref_height else 1.0
 
-    near_body = _scale_polygons(_parse_polygons(raw.get("near_body_zone")), scale_x, scale_y)
-    far_head = _scale_polygons(_parse_polygons(raw.get("far_head_zone")), scale_x, scale_y)
+    roi_root = raw.get("hybrid_detection_rois")
+    if not isinstance(roi_root, dict):
+        roi_root = {}
+
+    near_body_raw = roi_root.get("near_body_zone", raw.get("near_body_zone"))
+    far_head_raw = roi_root.get("far_head_zone", raw.get("far_head_zone"))
+
+    near_body = _scale_polygons(_parse_polygons(near_body_raw), scale_x, scale_y)
+    far_head = _scale_polygons(_parse_polygons(far_head_raw), scale_x, scale_y)
     return HybridRoiConfig(near_body_polygons=near_body, far_head_polygons=far_head)
