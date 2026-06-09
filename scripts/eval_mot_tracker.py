@@ -127,18 +127,76 @@ def discover_sequences(mot_root: Path, wanted: Iterable[str] | None) -> list[Seq
     return sequences
 
 
+def read_gt_detections(gt_path: Path) -> dict[int, "np.ndarray"]:
+    """Load ground-truth boxes per frame as *oracle* detections (conf=1, cls=0).
+
+    Keeps only 'consider' pedestrian rows (flag==1, class==1) so a tracker can be
+    fed near-perfect detections -- any remaining ID-switches are then the
+    tracker's own fault, isolating tracker quality from detector recall.
+    MOT gt.txt columns: frame, id, x, y, w, h, flag, class, visibility.
+    """
+    by_frame: dict[int, list[list[float]]] = {}
+    with gt_path.open(encoding="utf-8") as handle:
+        for line in handle:
+            parts = line.strip().split(",")
+            if len(parts) < 9:
+                continue
+            flag, cls = float(parts[6]), int(float(parts[7]))
+            if flag < 1 or cls != 1:
+                continue
+            frame = int(float(parts[0]))
+            x, y, w, h = (float(v) for v in parts[2:6])
+            by_frame.setdefault(frame, []).append([x, y, x + w, y + h, 1.0, 0.0])
+    return {f: np.array(rows, dtype=np.float32) for f, rows in by_frame.items()}
+
+
+def _merged_tracker_config(tracker_type: str, overrides: dict) -> dict | None:
+    """Return the tracker's default params merged with applicable overrides.
+
+    boxmot's create_tracker treats ``evolve_param_dict`` as the *complete* param
+    set, so we load the tracker's default config and patch in only the override
+    keys it actually defines (e.g. track_buffer vs max_age differ by tracker).
+    """
+    try:
+        from boxmot.trackers.tracker_zoo import get_tracker_config
+    except ModuleNotFoundError:
+        try:
+            from boxmot.tracker_zoo import get_tracker_config
+        except ModuleNotFoundError:
+            return None
+    import yaml
+
+    with open(get_tracker_config(tracker_type), encoding="utf-8") as handle:
+        raw = yaml.safe_load(handle) or {}
+    defaults = {
+        key: (value["default"] if isinstance(value, dict) and "default" in value else value)
+        for key, value in raw.items()
+    }
+    applied = False
+    for key, value in overrides.items():
+        if key in defaults:
+            defaults[key] = value
+            applied = True
+    return defaults if applied else None
+
+
 def build_tracker(
     tracker_type: str,
     *,
     reid_weights: str,
     device: str,
     half: bool,
+    overrides: dict | None = None,
 ):
-    """Create a boxmot tracker, attaching ReID weights only when relevant."""
+    """Create a boxmot tracker, attaching ReID weights and param overrides."""
     create_tracker = _import_create_tracker()
-    kwargs = {"per_class": False}
+    kwargs: dict = {"per_class": False}
     if tracker_type in REID_TRACKERS:
         kwargs.update(reid_weights=Path(reid_weights), device=device, half=half)
+    if overrides:
+        merged = _merged_tracker_config(tracker_type, overrides)
+        if merged is not None:
+            kwargs["evolve_param_dict"] = merged
     return create_tracker(tracker_type, **kwargs)
 
 
@@ -147,20 +205,33 @@ def run_tracker_on_sequence(
     tracker_type: str,
     detector,
     *,
+    detections: str,
     reid_weights: str,
     device: str,
     half: bool,
     conf: float,
     iou: float,
     imgsz: int,
+    max_det: int,
     max_frames: int,
+    track_buffer: int,
 ) -> list[tuple[int, int, float, float, float, float, float]]:
-    """Detect + track one sequence; return MOT rows (frame, id, x, y, w, h, conf)."""
+    """Detect + track one sequence; return MOT rows (frame, id, x, y, w, h, conf).
+
+    ``detections`` selects the detection source: ``"yolo"`` runs the detector,
+    ``"gt"`` feeds ground-truth boxes (oracle) to isolate tracker quality. The
+    frame image is still loaded either way so appearance/ReID can crop from it.
+    """
     import cv2
 
-    tracker = build_tracker(
-        tracker_type, reid_weights=reid_weights, device=device, half=half
+    overrides = (
+        {"track_buffer": track_buffer, "max_age": track_buffer} if track_buffer else None
     )
+    tracker = build_tracker(
+        tracker_type, reid_weights=reid_weights, device=device, half=half,
+        overrides=overrides,
+    )
+    gt_dets = read_gt_detections(sequence.gt_path) if detections == "gt" else None
     frame_paths = sorted(sequence.img_dir.glob("*.jpg"))
     if max_frames > 0:
         frame_paths = frame_paths[:max_frames]
@@ -170,24 +241,28 @@ def run_tracker_on_sequence(
         frame = cv2.imread(str(frame_path))
         if frame is None:
             continue
-        prediction = detector.predict(
-            source=frame,
-            conf=conf,
-            iou=iou,
-            classes=[PERSON_CLASS_ID],
-            imgsz=imgsz,
-            device=device,
-            half=half,
-            verbose=False,
-        )[0]
-        boxes = prediction.boxes
-        if boxes is None or len(boxes) == 0:
-            dets = np.empty((0, 6), dtype=np.float32)
+        if gt_dets is not None:
+            dets = gt_dets.get(frame_index, np.empty((0, 6), dtype=np.float32))
         else:
-            xyxy = boxes.xyxy.cpu().numpy()
-            confs = boxes.conf.cpu().numpy().reshape(-1, 1)
-            cls = np.zeros((xyxy.shape[0], 1), dtype=np.float32)
-            dets = np.hstack([xyxy, confs, cls]).astype(np.float32)
+            prediction = detector.predict(
+                source=frame,
+                conf=conf,
+                iou=iou,
+                classes=[PERSON_CLASS_ID],
+                imgsz=imgsz,
+                device=device,
+                half=half,
+                max_det=max_det,
+                verbose=False,
+            )[0]
+            boxes = prediction.boxes
+            if boxes is None or len(boxes) == 0:
+                dets = np.empty((0, 6), dtype=np.float32)
+            else:
+                xyxy = boxes.xyxy.cpu().numpy()
+                confs = boxes.conf.cpu().numpy().reshape(-1, 1)
+                cls = np.zeros((xyxy.shape[0], 1), dtype=np.float32)
+                dets = np.hstack([xyxy, confs, cls]).astype(np.float32)
 
         tracks = tracker.update(dets, frame)  # (M, 8): xyxy, id, conf, cls, det_idx
         for track in tracks:
@@ -278,9 +353,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         help="Ultralytics detector weights for person detection")
     parser.add_argument("--reid-weights", default=DEFAULT_REID_WEIGHTS,
                         help="ReID weights for appearance trackers (auto-downloaded)")
+    parser.add_argument("--detections", choices=["yolo", "gt"], default="yolo",
+                        help="Detection source: 'yolo' (realistic) or 'gt' "
+                             "(oracle ground-truth boxes, isolates tracker quality)")
+    parser.add_argument("--track-buffer", type=int, default=0,
+                        help="Override lost-track memory (track_buffer/max_age) in "
+                             "frames; 0 = each tracker's default (~30)")
     parser.add_argument("--conf", type=float, default=0.3)
     parser.add_argument("--iou", type=float, default=0.5)
     parser.add_argument("--imgsz", type=int, default=1280)
+    parser.add_argument("--max-det", type=int, default=300,
+                        help="Max detections per frame (raise for dense crowds)")
     parser.add_argument("--max-frames", type=int, default=500,
                         help="Cap frames per sequence for a fast first pass (0 = all)")
     parser.add_argument("--device", default="cpu", help="cpu or cuda:0")
@@ -299,8 +382,19 @@ def main(argv: list[str] | None = None) -> int:
         raise RuntimeError("ultralytics not installed. Run: pip install ultralytics")
 
     sequences = discover_sequences(args.mot_root, args.seqs)
+    if args.detections == "gt":
+        # Oracle mode needs ground truth; drop sequences without it (e.g. test).
+        sequences = [s for s in sequences if s.gt_path is not None]
+        if not sequences:
+            raise FileNotFoundError(
+                "--detections gt requires sequences with gt/gt.txt (train only)."
+            )
     print(f"Found {len(sequences)} sequence(s): {', '.join(s.name for s in sequences)}")
-    detector = YOLO(args.detector)
+    buf = args.track_buffer or "default"
+    print(f"detections={args.detections}  track_buffer={buf}  "
+          f"detector={args.detector if args.detections == 'yolo' else 'N/A'}  "
+          f"conf={args.conf}  imgsz={args.imgsz}")
+    detector = YOLO(args.detector) if args.detections == "yolo" else None
     args.out_dir.mkdir(parents=True, exist_ok=True)
 
     per_tracker_summaries = {}
@@ -313,9 +407,11 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  - {sequence.name} ...", flush=True)
             rows = run_tracker_on_sequence(
                 sequence, tracker_type, detector,
+                detections=args.detections,
                 reid_weights=args.reid_weights, device=args.device, half=args.half,
                 conf=args.conf, iou=args.iou, imgsz=args.imgsz,
-                max_frames=args.max_frames,
+                max_det=args.max_det, max_frames=args.max_frames,
+                track_buffer=args.track_buffer,
             )
             res_path = args.out_dir / tracker_type / f"{sequence.name}.txt"
             write_mot_results(rows, res_path)
