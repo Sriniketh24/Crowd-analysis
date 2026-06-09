@@ -70,15 +70,25 @@ def _import_create_tracker():
 
 
 def discover_sequences(mot_root: Path, wanted: Iterable[str] | None) -> list[Sequence]:
-    """Find MOTChallenge sequences under ``mot_root`` (each has img1/ + seqinfo)."""
-    sequences: list[Sequence] = []
+    """Find MOTChallenge sequences under ``mot_root`` (any dir containing img1/).
+
+    ``mot_root`` is forgiving: point it at the split dir (``.../MOT20/train``),
+    the dataset root (``.../MOT20``), or even ``/content`` — sequences are found
+    recursively by locating ``img1`` folders, so a slightly-off path still works.
+    """
+    if not mot_root.exists():
+        raise FileNotFoundError(
+            f"--mot-root does not exist: {mot_root}\n"
+            "The MOT20 download/unzip step likely did not complete. Expected a "
+            "path like /content/MOT20/train containing MOT20-01/, MOT20-02/, ..."
+        )
     wanted_set = {w.strip() for w in wanted} if wanted else None
-    for seq_dir in sorted(p for p in mot_root.iterdir() if p.is_dir()):
+    seq_dirs = sorted({p.parent for p in mot_root.rglob("img1") if p.is_dir()})
+    sequences: list[Sequence] = []
+    for seq_dir in seq_dirs:
         if wanted_set is not None and seq_dir.name not in wanted_set:
             continue
         img_dir = seq_dir / "img1"
-        if not img_dir.is_dir():
-            continue
         seqinfo = seq_dir / "seqinfo.ini"
         frame_count = 0
         if seqinfo.exists():
@@ -98,8 +108,8 @@ def discover_sequences(mot_root: Path, wanted: Iterable[str] | None) -> list[Seq
         )
     if not sequences:
         raise FileNotFoundError(
-            f"No sequences with an img1/ folder found under {mot_root}. "
-            "Point --mot-root at e.g. /path/to/MOT20/train"
+            f"No sequences found under {mot_root} (no img1/ folder anywhere below "
+            f"it). Check the unzip step; expected e.g. {mot_root}/MOT20-01/img1/000001.jpg"
         )
     return sequences
 
