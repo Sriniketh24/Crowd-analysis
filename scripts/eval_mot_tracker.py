@@ -220,6 +220,11 @@ def score_sequences(
             continue
         gt = mm.io.loadtxt(str(gt_path), fmt="mot16", min_confidence=1)
         ts = mm.io.loadtxt(str(result_paths[name]), fmt="mot16")
+        # When --max-frames caps the run, only score the frames we evaluated;
+        # otherwise the untracked tail counts as misses and distorts MOTA/recall.
+        if len(ts):
+            last_frame = ts.index.get_level_values("FrameId").max()
+            gt = gt[gt.index.get_level_values("FrameId") <= last_frame]
         accumulators.append(
             mm.utils.compare_to_groundtruth(gt, ts, "iou", distth=0.5)
         )
