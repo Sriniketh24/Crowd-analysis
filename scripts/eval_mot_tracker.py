@@ -37,6 +37,19 @@ from typing import Iterable
 
 import numpy as np
 
+# py-motmetrics (1.4.0, the latest release) still calls np.asfarray, which NumPy
+# removed in 2.0. Colab ships NumPy 2.x and boxmot/ultralytics require it, so we
+# restore the helper here instead of downgrading NumPy. asfarray == asarray cast
+# to a float dtype (defaulting to float64 when a non-float dtype is requested).
+if not hasattr(np, "asfarray"):  # pragma: no cover - environment shim
+    def _asfarray(a, dtype=np.float64):
+        dtype = np.dtype(dtype)
+        if not np.issubdtype(dtype, np.inexact):
+            dtype = np.float64
+        return np.asarray(a, dtype=dtype)
+
+    np.asfarray = _asfarray  # type: ignore[attr-defined]
+
 # Trackers that consume ReID appearance weights; the rest are motion-only.
 REID_TRACKERS = {"botsort", "deepocsort", "strongsort", "hybridsort", "boosttrack"}
 MOTION_TRACKERS = {"bytetrack", "ocsort", "sfsort"}
