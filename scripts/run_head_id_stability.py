@@ -346,6 +346,19 @@ def parse_args() -> argparse.Namespace:
         default=["baseline", "fix_0p16", "fix_0p30"],
         choices=[arm.name for arm in DEFAULT_ARMS],
     )
+    parser.add_argument(
+        "--sweep-profiles",
+        nargs="+",
+        default=[],
+        choices=["loose", "wide"],
+        help="Append generated loose/wide stitching candidates for parameter search.",
+    )
+    parser.add_argument(
+        "--sweep-limit",
+        type=int,
+        default=0,
+        help="Limit generated sweep arms per profile for quick smoke tests. 0 = all.",
+    )
     parser.add_argument("--output-root", type=Path, default=Path("data/outputs/head_id_stability"))
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--half", action="store_true")
@@ -358,8 +371,75 @@ def parse_args() -> argparse.Namespace:
         help="Default stitching mode for arms without their own override.",
     )
     parser.add_argument("--download-sample", action="store_true")
+    parser.add_argument(
+        "--draw-annotated",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Write per-arm annotated videos. Disable for large metric sweeps.",
+    )
     parser.add_argument("--make-side-by-side", action=argparse.BooleanOptionalAction, default=True)
     return parser.parse_args()
+
+
+def sweep_arms(profile: str, *, limit: int = 0) -> list[Arm]:
+    """Generate parameter-search arms around the strongest loose/wide candidates."""
+    if profile == "loose":
+        specs = [
+            ("vel", 120, 3.6, 0.86, 0.55, 5.5, 0.0, 1.00, 0.00, 1.00, "velocity"),
+            ("vel", 150, 4.0, 0.88, 0.60, 6.0, 0.0, 1.00, 0.00, 1.00, "velocity"),
+            ("vel", 180, 4.4, 0.90, 0.68, 6.8, 0.0, 1.00, 0.00, 1.00, "velocity"),
+            ("app", 150, 4.0, 0.88, 0.60, 6.0, 0.20, 0.82, 0.00, 1.00, "velocity"),
+            ("obs", 160, 4.2, 0.88, 0.65, 6.5, 0.00, 1.00, 0.12, 0.85, "observation"),
+            ("obsapp", 160, 4.2, 0.90, 0.65, 6.5, 0.20, 0.82, 0.10, 0.85, "observation"),
+            ("obsapp", 190, 4.8, 0.92, 0.75, 7.2, 0.18, 0.84, 0.10, 0.88, "observation"),
+        ]
+    elif profile == "wide":
+        specs = [
+            ("vel", 150, 4.0, 1.00, 0.70, 0.0, 0.0, 1.00, 0.00, 1.00, "velocity"),
+            ("velg", 180, 4.5, 0.92, 0.70, 7.0, 0.0, 1.00, 0.00, 1.00, "velocity"),
+            ("velg", 220, 5.0, 0.95, 0.82, 7.5, 0.0, 1.00, 0.00, 1.00, "velocity"),
+            ("appg", 180, 4.5, 0.92, 0.72, 7.0, 0.20, 0.82, 0.00, 1.00, "velocity"),
+            ("obs", 180, 4.5, 0.92, 0.75, 7.2, 0.0, 1.00, 0.18, 0.85, "observation"),
+            ("obsapp", 220, 5.0, 0.95, 0.85, 7.5, 0.18, 0.84, 0.12, 0.88, "observation"),
+            ("obsapp", 260, 5.5, 0.97, 0.92, 8.0, 0.15, 0.86, 0.10, 0.90, "observation"),
+        ]
+    else:
+        raise ValueError(f"Unknown sweep profile: {profile}")
+
+    arms = [
+        Arm(
+            name=f"sweep_{profile}_{idx:02d}_{kind}_g{gap}_d{dist:g}_j{jump:g}",
+            conf=0.16,
+            activation=0.20,
+            consec=3,
+            expand=True,
+            stitch=True,
+            stitch_gap_frames=gap,
+            stitch_dist_heads=dist,
+            stitch_mode=mode,
+            stitch_ambiguity_ratio=ambiguity,
+            stitch_max_speed_heads=speed,
+            stitch_appearance_weight=app_weight,
+            stitch_max_appearance_cost=app_cost,
+            stitch_direction_weight=direction_weight,
+            stitch_max_direction_cost=direction_cost_value,
+            stitch_max_jump_heads=jump,
+        )
+        for idx, (
+            kind,
+            gap,
+            dist,
+            ambiguity,
+            speed,
+            jump,
+            app_weight,
+            app_cost,
+            direction_weight,
+            direction_cost_value,
+            mode,
+        ) in enumerate(specs, start=1)
+    ]
+    return arms[:limit] if limit > 0 else arms
 
 
 def ensure_video(video_path: Path, *, download_sample: bool) -> Path:
@@ -839,6 +919,7 @@ def run_arm(
     cfg: StabilityConfig,
     *,
     max_frames: int,
+    draw_annotated: bool,
 ) -> dict[str, object]:
     """Run one arm and return summary metrics."""
     fps, width, height, total_frames = video_meta(video_path)
@@ -1021,48 +1102,50 @@ def run_arm(
     ).to_csv(lifespans_csv, index=False)
 
     annotated_video = out_dir / f"{arm.name}_annotated.mp4"
-    capture = cv2.VideoCapture(str(video_path))
-    writer = open_writer(annotated_video, fps, (width, height))
-    frame_index = 0
-    with tqdm(total=len(per_frame), desc=f"{arm.name} draw") as progress:
-        while frame_index < len(per_frame):
-            ok, frame = capture.read()
-            if not ok:
-                break
-            current_visible = 0
-            for track_id, box, _conf in per_frame[frame_index]:
-                rid = root_id(track_id)
-                if rid not in confirmed:
-                    continue
-                current_visible += 1
-                x1, y1, x2, y2 = (int(value) for value in box)
-                color = color_for(rid)
-                cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-                cv2.putText(
-                    frame,
-                    str(rid),
-                    (x1, max(10, y1 - 4)),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.5,
-                    color,
-                    1,
-                    cv2.LINE_AA,
-                )
-            labels = [
-                arm.name,
-                f"visible(confirmed): {current_visible}",
-                f"unique(confirmed): {confirmed_unique}",
-                f"raw IDs: {raw_unique}",
-            ]
-            for idx, label in enumerate(labels):
-                y = 24 + idx * 24
-                cv2.putText(frame, label, (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 0, 0), 4, cv2.LINE_AA)
-                cv2.putText(frame, label, (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 255), 2, cv2.LINE_AA)
-            writer.write(frame)
-            frame_index += 1
-            progress.update(1)
-    capture.release()
-    writer.release()
+    if draw_annotated:
+        capture = cv2.VideoCapture(str(video_path))
+        writer = open_writer(annotated_video, fps, (width, height))
+        frame_index = 0
+        with tqdm(total=len(per_frame), desc=f"{arm.name} draw") as progress:
+            while frame_index < len(per_frame):
+                ok, frame = capture.read()
+                if not ok:
+                    break
+                current_visible = 0
+                for track_id, box, _conf in per_frame[frame_index]:
+                    rid = root_id(track_id)
+                    if rid not in confirmed:
+                        continue
+                    current_visible += 1
+                    x1, y1, x2, y2 = (int(value) for value in box)
+                    color = color_for(rid)
+                    cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+                    cv2.putText(
+                        frame,
+                        str(rid),
+                        (x1, max(10, y1 - 4)),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.5,
+                        color,
+                        1,
+                        cv2.LINE_AA,
+                    )
+                labels = [
+                    arm.name,
+                    f"visible(confirmed): {current_visible}",
+                    f"unique(confirmed): {confirmed_unique}",
+                    f"raw IDs: {raw_unique}",
+                ]
+                for idx, label in enumerate(labels):
+                    y = 24 + idx * 24
+                    cv2.putText(frame, label, (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 0, 0), 4, cv2.LINE_AA)
+                    cv2.putText(frame, label, (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 255), 2, cv2.LINE_AA)
+                writer.write(frame)
+                frame_index += 1
+                progress.update(1)
+        capture.release()
+        writer.release()
+    annotated_video_text = str(annotated_video) if draw_annotated else ""
 
     return {
         "arm": arm.name,
@@ -1095,7 +1178,7 @@ def run_arm(
         "gt_mae": round(gt_mae, 2) if gt_mae == gt_mae else None,
         "per_frame_csv": str(per_frame_csv),
         "lifespans_csv": str(lifespans_csv),
-        "annotated_video": str(annotated_video),
+        "annotated_video": annotated_video_text,
     }
 
 
@@ -1125,6 +1208,36 @@ def make_side_by_side(summaries: list[dict[str, object]], out_path: Path, target
     writer.release()
 
 
+def ranked_metrics(table: pd.DataFrame) -> pd.DataFrame:
+    """Rank arms by safety gates first, then by unique-ID compression."""
+    ranked = table.copy()
+    duplicate_penalty = (
+        ranked["duplicate_id_frames"] * 500
+        + ranked["duplicate_id_instances"] * 1000
+        + (ranked["max_same_id_instances"] - 1).clip(lower=0) * 1000
+    )
+    stability_penalty = (
+        ranked["gap_jump_events"] * 3
+        + ranked["max_gap_jump_heads"] * 2
+        + ranked["residual_switch_events"] * 4
+    )
+    ranked["passes_hard_gates"] = (
+        (ranked["duplicate_id_frames"] == 0)
+        & (ranked["duplicate_id_instances"] == 0)
+        & (ranked["max_same_id_instances"] == 1)
+    )
+    ranked["selection_score"] = (
+        ranked["confirmed_unique"]
+        + duplicate_penalty
+        + stability_penalty
+        + ranked["gt_mae"].fillna(0)
+    ).round(2)
+    return ranked.sort_values(
+        ["passes_hard_gates", "selection_score", "confirmed_unique"],
+        ascending=[False, True, True],
+    )
+
+
 def main() -> int:
     """Run selected arms and save outputs."""
     args = parse_args()
@@ -1134,6 +1247,8 @@ def main() -> int:
     cfg = StabilityConfig(imgsz=args.imgsz, stitch_mode=args.stitch_mode)
     selected = {arm.name: arm for arm in DEFAULT_ARMS}
     arms = [selected[name] for name in args.arms]
+    for profile in args.sweep_profiles:
+        arms.extend(sweep_arms(profile, limit=args.sweep_limit))
 
     out_dir = args.output_root / video_path.stem / label
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -1156,12 +1271,23 @@ def main() -> int:
     )
 
     summaries = [
-        run_arm(arm, detector, video_path, out_dir, cfg, max_frames=args.max_frames)
+        run_arm(
+            arm,
+            detector,
+            video_path,
+            out_dir,
+            cfg,
+            max_frames=args.max_frames,
+            draw_annotated=args.draw_annotated,
+        )
         for arm in arms
     ]
     table = pd.DataFrame(summaries)
     metrics_path = out_dir / "comparison_metrics.csv"
     table.to_csv(metrics_path, index=False)
+    ranked = ranked_metrics(table)
+    ranked_path = out_dir / "ranked_metrics.csv"
+    ranked.to_csv(ranked_path, index=False)
     print("\n=== comparison_metrics ===")
     print(table[
         [
@@ -1192,11 +1318,32 @@ def main() -> int:
         ]
     ].to_string(index=False))
     print(f"\nSaved: {metrics_path}")
+    print(f"Ranked: {ranked_path}")
 
-    if args.make_side_by_side and len(summaries) > 1:
+    print("\n=== top_ranked_candidates ===")
+    print(
+        ranked[
+            [
+                "arm",
+                "passes_hard_gates",
+                "selection_score",
+                "confirmed_unique",
+                "residual_switch_events",
+                "gap_jump_events",
+                "max_gap_jump_heads",
+                "median_concurrent_confirmed",
+            ]
+        ]
+        .head(10)
+        .to_string(index=False)
+    )
+
+    if args.draw_annotated and args.make_side_by_side and len(summaries) > 1:
         side_path = out_dir / "side_by_side.mp4"
         make_side_by_side(summaries, side_path)
         print(f"Side-by-side: {side_path}")
+    elif args.make_side_by_side and not args.draw_annotated:
+        print("Side-by-side skipped because --no-draw-annotated was set.")
 
     return 0
 
