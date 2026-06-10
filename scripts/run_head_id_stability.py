@@ -52,6 +52,9 @@ class Arm:
     consec: int
     expand: bool
     stitch: bool
+    stitch_gap_frames: int | None = None
+    stitch_dist_heads: float | None = None
+    stitch_mode: str | None = None
 
 
 @dataclass(frozen=True)
@@ -68,6 +71,7 @@ class StabilityConfig:
     box_expand_factor: float = 1.6
     stitch_gap_frames: int = 45
     stitch_dist_heads: float = 1.5
+    stitch_mode: str = "spatial"
     switch_lookback: int = 45
 
 
@@ -75,6 +79,28 @@ DEFAULT_ARMS = (
     Arm("baseline", conf=0.16, activation=0.45, consec=1, expand=False, stitch=False),
     Arm("fix_0p16", conf=0.16, activation=0.20, consec=3, expand=True, stitch=True),
     Arm("fix_0p30", conf=0.30, activation=0.30, consec=3, expand=True, stitch=True),
+    Arm(
+        "fix_0p16_loose",
+        conf=0.16,
+        activation=0.20,
+        consec=3,
+        expand=True,
+        stitch=True,
+        stitch_gap_frames=90,
+        stitch_dist_heads=3.0,
+        stitch_mode="velocity",
+    ),
+    Arm(
+        "fix_0p16_wide",
+        conf=0.16,
+        activation=0.20,
+        consec=3,
+        expand=True,
+        stitch=True,
+        stitch_gap_frames=150,
+        stitch_dist_heads=4.0,
+        stitch_mode="velocity",
+    ),
 )
 
 MANUAL_GT = {80: 25, 240: 27, 400: 21, 560: 28, 720: 24}
@@ -106,6 +132,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--half", action="store_true")
     parser.add_argument("--imgsz", type=int, default=1536)
     parser.add_argument("--max-frames", type=int, default=0, help="0 = whole video")
+    parser.add_argument(
+        "--stitch-mode",
+        choices=["spatial", "velocity"],
+        default="spatial",
+        help="Default stitching mode for arms without their own override.",
+    )
     parser.add_argument("--download-sample", action="store_true")
     parser.add_argument("--make-side-by-side", action=argparse.BooleanOptionalAction, default=True)
     return parser.parse_args()
@@ -345,6 +377,7 @@ def stitch_tracks(
     *,
     gap_frames: int,
     dist_heads: float,
+    mode: str = "spatial",
 ) -> dict[int, int]:
     """Merge short-gap track fragments by spatial continuity."""
     info: dict[int, dict[str, object]] = {}
@@ -356,11 +389,13 @@ def stitch_tracks(
                     "last": frame_index,
                     "first_c": centroid(box),
                     "last_c": centroid(box),
+                    "centers": [],
                     "widths": [box_width(box)],
                 }
             row = info[track_id]
             row["last"] = frame_index
             row["last_c"] = centroid(box)
+            row["centers"].append((frame_index, centroid(box)))  # type: ignore[union-attr]
             row["widths"].append(box_width(box))  # type: ignore[union-attr]
 
     parent = {track_id: track_id for track_id in info}
@@ -375,6 +410,18 @@ def stitch_tracks(
         root_a, root_b = find(earlier), find(later)
         if root_a != root_b:
             parent[root_b] = root_a
+
+    def velocity(track_id: int, *, tail: bool) -> tuple[float, float]:
+        centers = info[track_id]["centers"]  # type: ignore[assignment]
+        if len(centers) < 2:
+            return (0.0, 0.0)
+        segment = centers[-6:] if tail else centers[:6]
+        if len(segment) < 2:
+            return (0.0, 0.0)
+        f0, c0 = segment[0]
+        f1, c1 = segment[-1]
+        dt = max(1, int(f1) - int(f0))
+        return ((c1[0] - c0[0]) / dt, (c1[1] - c0[1]) / dt)
 
     births = sorted(info, key=lambda track_id: int(info[track_id]["first"]))
     for born_id in births:
@@ -392,6 +439,14 @@ def stitch_tracks(
                 continue
             old_center = old["last_c"]  # type: ignore[assignment]
             distance = math.hypot(born_center[0] - old_center[0], born_center[1] - old_center[1])
+            if mode == "velocity":
+                vx, vy = velocity(old_id, tail=True)
+                predicted = (old_center[0] + vx * gap, old_center[1] + vy * gap)
+                predicted_distance = math.hypot(
+                    born_center[0] - predicted[0],
+                    born_center[1] - predicted[1],
+                )
+                distance = min(distance, predicted_distance)
             threshold = dist_heads * max(born_width, float(np.median(old["widths"])))  # type: ignore[arg-type]
             if distance <= threshold and (best_dist is None or distance < best_dist):
                 best_id, best_dist = old_id, distance
@@ -453,6 +508,9 @@ def run_arm(
         total_frames = min(total_frames, max_frames)
     detector.confidence = arm.conf
     tracker = TunedHeadTracker(fps, arm, cfg)
+    stitch_gap_frames = arm.stitch_gap_frames or cfg.stitch_gap_frames
+    stitch_dist_heads = arm.stitch_dist_heads or cfg.stitch_dist_heads
+    stitch_mode = arm.stitch_mode or cfg.stitch_mode
 
     per_frame: list[list[tuple[int, tuple[float, float, float, float], float]]] = []
     capture = cv2.VideoCapture(str(video_path))
@@ -472,7 +530,12 @@ def run_arm(
     capture.release()
 
     remap = (
-        stitch_tracks(per_frame, gap_frames=cfg.stitch_gap_frames, dist_heads=cfg.stitch_dist_heads)
+        stitch_tracks(
+            per_frame,
+            gap_frames=stitch_gap_frames,
+            dist_heads=stitch_dist_heads,
+            mode=stitch_mode,
+        )
         if arm.stitch
         else {}
     )
@@ -520,7 +583,7 @@ def run_arm(
                     first_center[rid][1] - last_center[other][1],
                 )
                 first_box = stats[rid]["boxes"][0]  # type: ignore[index]
-                if distance <= cfg.stitch_dist_heads * box_width(first_box):
+                if distance <= stitch_dist_heads * box_width(first_box):
                     switch_events += 1
                     break
 
@@ -600,6 +663,9 @@ def run_arm(
         "arm": arm.name,
         "conf": arm.conf,
         "backend": tracker.backend,
+        "stitch_gap_frames": stitch_gap_frames if arm.stitch else 0,
+        "stitch_dist_heads": stitch_dist_heads if arm.stitch else 0,
+        "stitch_mode": stitch_mode if arm.stitch else "none",
         "peak_concurrent_confirmed": peak_concurrent,
         "median_concurrent_confirmed": round(median_concurrent, 2),
         "raw_unique_ids_prestitch": raw_unique,
@@ -648,7 +714,7 @@ def main() -> int:
     video_path = ensure_video(args.video, download_sample=args.download_sample)
     model_path = resolve_model(args.model)
     label = model_label_for(model_path, args.model_label)
-    cfg = StabilityConfig(imgsz=args.imgsz)
+    cfg = StabilityConfig(imgsz=args.imgsz, stitch_mode=args.stitch_mode)
     selected = {arm.name: arm for arm in DEFAULT_ARMS}
     arms = [selected[name] for name in args.arms]
 
@@ -683,6 +749,9 @@ def main() -> int:
     print(table[
         [
             "arm",
+            "stitch_gap_frames",
+            "stitch_dist_heads",
+            "stitch_mode",
             "peak_concurrent_confirmed",
             "median_concurrent_confirmed",
             "raw_unique_ids_prestitch",
