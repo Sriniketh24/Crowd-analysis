@@ -61,6 +61,7 @@ class Arm:
     stitch_max_appearance_cost: float | None = None
     stitch_direction_weight: float | None = None
     stitch_max_direction_cost: float | None = None
+    stitch_max_jump_heads: float | None = None
 
 
 @dataclass(frozen=True)
@@ -84,6 +85,7 @@ class StabilityConfig:
     stitch_max_appearance_cost: float = 1.0
     stitch_direction_weight: float = 0.0
     stitch_max_direction_cost: float = 1.0
+    stitch_max_jump_heads: float = 0.0
     switch_lookback: int = 45
 
 
@@ -180,6 +182,38 @@ DEFAULT_ARMS = (
         stitch_max_direction_cost=0.85,
     ),
     Arm(
+        "fix_0p16_loose_guard",
+        conf=0.16,
+        activation=0.20,
+        consec=3,
+        expand=True,
+        stitch=True,
+        stitch_gap_frames=150,
+        stitch_dist_heads=4.0,
+        stitch_mode="velocity",
+        stitch_ambiguity_ratio=0.88,
+        stitch_max_speed_heads=0.60,
+        stitch_max_jump_heads=6.0,
+    ),
+    Arm(
+        "fix_0p16_loose_guard_app",
+        conf=0.16,
+        activation=0.20,
+        consec=3,
+        expand=True,
+        stitch=True,
+        stitch_gap_frames=160,
+        stitch_dist_heads=4.2,
+        stitch_mode="observation",
+        stitch_ambiguity_ratio=0.88,
+        stitch_max_speed_heads=0.65,
+        stitch_appearance_weight=0.20,
+        stitch_max_appearance_cost=0.82,
+        stitch_direction_weight=0.10,
+        stitch_max_direction_cost=0.85,
+        stitch_max_jump_heads=6.5,
+    ),
+    Arm(
         "fix_0p16_wide_app",
         conf=0.16,
         activation=0.20,
@@ -240,6 +274,38 @@ DEFAULT_ARMS = (
         stitch_max_appearance_cost=0.80,
         stitch_direction_weight=0.15,
         stitch_max_direction_cost=0.85,
+    ),
+    Arm(
+        "fix_0p16_wide_guard",
+        conf=0.16,
+        activation=0.20,
+        consec=3,
+        expand=True,
+        stitch=True,
+        stitch_gap_frames=180,
+        stitch_dist_heads=4.5,
+        stitch_mode="velocity",
+        stitch_ambiguity_ratio=0.92,
+        stitch_max_speed_heads=0.70,
+        stitch_max_jump_heads=7.0,
+    ),
+    Arm(
+        "fix_0p16_wide_guard_app",
+        conf=0.16,
+        activation=0.20,
+        consec=3,
+        expand=True,
+        stitch=True,
+        stitch_gap_frames=220,
+        stitch_dist_heads=5.0,
+        stitch_mode="observation",
+        stitch_ambiguity_ratio=0.95,
+        stitch_max_speed_heads=0.85,
+        stitch_appearance_weight=0.20,
+        stitch_max_appearance_cost=0.82,
+        stitch_direction_weight=0.12,
+        stitch_max_direction_cost=0.85,
+        stitch_max_jump_heads=7.5,
     ),
     Arm(
         "fix_0p16_wide",
@@ -600,6 +666,7 @@ def stitch_tracks(
     max_appearance_cost: float = 1.0,
     direction_weight: float = 0.0,
     max_direction_cost: float = 1.0,
+    max_jump_heads: float = 0.0,
 ) -> dict[int, int]:
     """Merge short-gap track fragments by spatial continuity."""
     info: dict[int, dict[str, object]] = {}
@@ -665,7 +732,12 @@ def stitch_tracks(
             if gap <= 0 or gap > gap_frames:
                 continue
             old_center = old["last_c"]  # type: ignore[assignment]
-            distance = math.hypot(born_center[0] - old_center[0], born_center[1] - old_center[1])
+            raw_distance = math.hypot(born_center[0] - old_center[0], born_center[1] - old_center[1])
+            max_head_width = max(born_width, float(np.median(old["widths"])))  # type: ignore[arg-type]
+            raw_jump_heads = raw_distance / max(1.0, max_head_width)
+            if max_jump_heads > 0.0 and raw_jump_heads > max_jump_heads:
+                continue
+            distance = raw_distance
             direction_mismatch = 0.0
             if mode in {"velocity", "observation"}:
                 vx, vy = velocity(old_id, tail=True)
@@ -687,7 +759,7 @@ def stitch_tracks(
                     direction_mismatch = direction_cost((vx, vy), (bvx, bvy))
                     if direction_mismatch > max_direction_cost:
                         continue
-            threshold = dist_heads * max(born_width, float(np.median(old["widths"])))  # type: ignore[arg-type]
+            threshold = dist_heads * max_head_width
             implied_speed_heads = distance / max(1, gap) / max(1.0, born_width)
             if distance <= threshold and implied_speed_heads <= max_speed_heads:
                 spatial_cost = distance / max(1.0, threshold)
@@ -799,6 +871,9 @@ def run_arm(
         if arm.stitch_max_direction_cost is not None
         else cfg.stitch_max_direction_cost
     )
+    stitch_max_jump_heads = (
+        arm.stitch_max_jump_heads if arm.stitch_max_jump_heads is not None else cfg.stitch_max_jump_heads
+    )
 
     per_frame: list[list[tuple[int, tuple[float, float, float, float], float]]] = []
     appearance_by_track: dict[int, dict[str, np.ndarray | None]] = {}
@@ -838,6 +913,7 @@ def run_arm(
             max_appearance_cost=stitch_max_appearance_cost,
             direction_weight=stitch_direction_weight,
             max_direction_cost=stitch_max_direction_cost,
+            max_jump_heads=stitch_max_jump_heads,
         )
         if arm.stitch
         else {}
@@ -1001,6 +1077,7 @@ def run_arm(
         "stitch_max_appearance_cost": stitch_max_appearance_cost if arm.stitch else 0,
         "stitch_direction_weight": stitch_direction_weight if arm.stitch else 0,
         "stitch_max_direction_cost": stitch_max_direction_cost if arm.stitch else 0,
+        "stitch_max_jump_heads": stitch_max_jump_heads if arm.stitch else 0,
         "peak_concurrent_confirmed": peak_concurrent,
         "median_concurrent_confirmed": round(median_concurrent, 2),
         "raw_unique_ids_prestitch": raw_unique,
@@ -1098,6 +1175,7 @@ def main() -> int:
             "stitch_max_appearance_cost",
             "stitch_direction_weight",
             "stitch_max_direction_cost",
+            "stitch_max_jump_heads",
             "peak_concurrent_confirmed",
             "median_concurrent_confirmed",
             "raw_unique_ids_prestitch",
