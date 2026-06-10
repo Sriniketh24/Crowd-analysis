@@ -37,6 +37,7 @@ from src.vision.detector import DEFAULT_HEAD_MODEL_PATH, Detector, normalize_det
 from src.vision.fusion_tracker import HybridTracker
 from src.vision.hybrid_detector import HybridDetector, load_hybrid_roi_config
 from src.vision.line_counter import LineConfig, LineManager
+from src.vision.track_stitcher import TrackStitcher, TrackStitcherConfig
 from src.vision.tracker import Tracker
 from src.vision.zone_manager import PointStrategy, ZoneConfig, ZoneManager
 
@@ -517,6 +518,28 @@ def build_hybrid_models(
     return hybrid_detector, hybrid_tracker
 
 
+def build_track_stitcher(settings: AppSettings, detector_mode: str) -> TrackStitcher | None:
+    """Build the optional head-ID stitcher for head or hybrid modes."""
+    mode = normalize_detector_mode(detector_mode)
+    if mode not in {"head", "hybrid"}:
+        return None
+    raw = dict(settings.tracker.head_stitching)
+    if not bool(raw.get("enabled", False)):
+        return None
+    config = TrackStitcherConfig(
+        enabled=True,
+        gap_frames=int(raw.get("gap_frames", 220)),
+        dist_heads=float(raw.get("dist_heads", 5.0)),
+        mode=str(raw.get("mode", "observation")),
+        ambiguity_ratio=float(raw.get("ambiguity_ratio", 0.95)),
+        max_speed_heads=float(raw.get("max_speed_heads", 0.85)),
+        direction_weight=float(raw.get("direction_weight", 0.12)),
+        max_direction_cost=float(raw.get("max_direction_cost", 0.85)),
+        max_jump_heads=float(raw.get("max_jump_heads", 7.5)),
+    )
+    return TrackStitcher(config)
+
+
 def validate_head_model(model: str) -> str | None:
     """Return an actionable error message when a head-model path is missing."""
     model_path = Path(model)
@@ -615,6 +638,7 @@ def run_pipeline(args: argparse.Namespace) -> int:
     hybrid_tracker = None
     detector = None
     tracker = None
+    track_stitcher = build_track_stitcher(settings, effective["detector_mode"])
     try:
         if effective["detector_mode"] == "hybrid":
             hybrid_detector, hybrid_tracker = build_hybrid_models(
@@ -652,6 +676,7 @@ def run_pipeline(args: argparse.Namespace) -> int:
         resize_width=effective["resize_width"],
         hybrid_detector=hybrid_detector,
         hybrid_tracker=hybrid_tracker,
+        track_stitcher=track_stitcher,
     )
 
     analytics_logger = None

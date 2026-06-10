@@ -131,6 +131,7 @@ class TrackerSettings:
     type: str = "bytetrack"
     config_overrides: dict[str, Any] = field(default_factory=dict)
     head_config_overrides: dict[str, Any] = field(default_factory=dict)
+    head_stitching: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -239,6 +240,7 @@ def load_app_settings(path: str | Path = "configs/app.yaml") -> AppSettings:
             type=str(tracker_raw.get("type", "bytetrack")).strip().lower(),
             config_overrides=tracker_overrides,
             head_config_overrides=dict(tracker_raw.get("head_config_overrides", {})),
+            head_stitching=dict(tracker_raw.get("head_stitching", {})),
         ),
         runtime=RuntimeSettings(
             frame_stride=max(1, int(runtime_raw.get("frame_stride", 1))),

@@ -39,6 +39,18 @@ tracker:
     track_buffer: 90
     match_thresh: 0.70
     fuse_score: true
+  head_stitching:
+    enabled: true
+    # v7 winner: fix_0p16_wide_guard_app. Keeps unique IDs low while reducing
+    # large post-occlusion jumps compared with raw wide stitching.
+    gap_frames: 220
+    dist_heads: 5.0
+    mode: observation
+    ambiguity_ratio: 0.95
+    max_speed_heads: 0.85
+    direction_weight: 0.12
+    max_direction_cost: 0.85
+    max_jump_heads: 7.5
 
 persistence:
   db_url: sqlite:///data/outputs/analytics.db

@@ -13,6 +13,7 @@ from src.vision.detection_filter import DetectionRegionFilter
 from src.vision.fusion_tracker import HybridTracker
 from src.vision.hybrid_detector import HybridDetector
 from src.vision.line_counter import LineCrossing, LineManager
+from src.vision.track_stitcher import TrackStitcher
 from src.vision.zone_manager import ZoneManager
 from src.vision.tracker import Tracker, normalize_tracks
 
@@ -53,6 +54,7 @@ class FrameProcessor:
         resize_width: int | None = None,
         hybrid_detector: HybridDetector | None = None,
         hybrid_tracker: HybridTracker | None = None,
+        track_stitcher: TrackStitcher | None = None,
     ) -> None:
         """Build a modular frame processor with optional resize step."""
         self.detector = detector
@@ -65,6 +67,7 @@ class FrameProcessor:
         self.resize_width = resize_width
         self.hybrid_detector = hybrid_detector
         self.hybrid_tracker = hybrid_tracker
+        self.track_stitcher = track_stitcher
         self._unique_track_ids_seen: set[int] = set()
         self._last_processed_timestamp: float | None = None
 
@@ -103,6 +106,8 @@ class FrameProcessor:
                     frame_index=frame_index,
                     timestamp=timestamp,
                 )
+            if self.track_stitcher is not None:
+                fused = self.track_stitcher.update(fused, frame_index=frame_index)
             return self._build_result(prepared, fused, frame_index=frame_index, timestamp=timestamp)
 
         if self.use_tracking and self.tracker is not None:
@@ -114,6 +119,8 @@ class FrameProcessor:
             normalized = normalize_tracks(tracked)
             if self.detection_filter is not None:
                 normalized = self.detection_filter.filter(normalized)
+            if self.track_stitcher is not None:
+                normalized = self.track_stitcher.update(normalized, frame_index=frame_index)
             return self._build_result(prepared, normalized, frame_index=frame_index, timestamp=timestamp)
 
         if self.detector is None:
