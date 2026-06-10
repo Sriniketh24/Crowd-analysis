@@ -11,6 +11,9 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 
+import cv2
+import numpy as np
+
 from src.vision.detector import NormalizedDetection
 
 BBox = tuple[float, float, float, float]
@@ -34,6 +37,47 @@ def _direction_cost(a: tuple[float, float], b: tuple[float, float]) -> float:
     return (1.0 - max(-1.0, min(1.0, cosine))) / 2.0
 
 
+def _appearance_crop_box(box: BBox, frame_shape: tuple[int, ...]) -> tuple[int, int, int, int]:
+    height, width = frame_shape[:2]
+    x1, y1, x2, y2 = box
+    box_width = max(1.0, x2 - x1)
+    box_height = max(1.0, y2 - y1)
+    center_x = (x1 + x2) / 2.0
+    crop_width = box_width * 2.2
+    crop_height = box_height * 3.0
+    left = max(0, int(round(center_x - crop_width / 2.0)))
+    right = min(width, int(round(center_x + crop_width / 2.0)))
+    top = max(0, int(round(y1 - box_height * 0.25)))
+    bottom = min(height, int(round(y1 + crop_height)))
+    return (left, top, right, bottom)
+
+
+def _appearance_histogram(frame: np.ndarray | None, box: BBox) -> np.ndarray | None:
+    if frame is None:
+        return None
+    left, top, right, bottom = _appearance_crop_box(box, frame.shape)
+    if right <= left or bottom <= top:
+        return None
+    crop = frame[top:bottom, left:right]
+    if crop.size == 0:
+        return None
+    hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+    hist = cv2.calcHist([hsv], [0, 1], None, [12, 8], [0, 180, 0, 256])
+    hist = cv2.normalize(hist, hist).flatten().astype(np.float32)
+    if not np.isfinite(hist).all() or float(hist.sum()) <= 0:
+        return None
+    return hist
+
+
+def _appearance_cost(a: np.ndarray | None, b: np.ndarray | None) -> float:
+    if a is None or b is None:
+        return 1.0
+    similarity = float(cv2.compareHist(a.astype(np.float32), b.astype(np.float32), cv2.HISTCMP_CORREL))
+    if not math.isfinite(similarity):
+        return 1.0
+    return max(0.0, min(1.0, (1.0 - similarity) / 2.0))
+
+
 @dataclass(frozen=True, slots=True)
 class TrackStitcherConfig:
     """Controls for online track-fragment stitching."""
@@ -44,6 +88,8 @@ class TrackStitcherConfig:
     mode: str = "observation"
     ambiguity_ratio: float = 0.95
     max_speed_heads: float = 0.85
+    appearance_weight: float = 0.0
+    max_appearance_cost: float = 1.0
     direction_weight: float = 0.12
     max_direction_cost: float = 0.85
     max_jump_heads: float = 7.5
@@ -60,6 +106,7 @@ class _TrackState:
     last_box: BBox
     centers: list[tuple[int, tuple[float, float]]] = field(default_factory=list)
     widths: list[float] = field(default_factory=list)
+    last_appearance: np.ndarray | None = None
 
 
 class TrackStitcher:
@@ -75,6 +122,7 @@ class TrackStitcher:
         detections: list[NormalizedDetection],
         *,
         frame_index: int,
+        frame: np.ndarray | None = None,
     ) -> list[NormalizedDetection]:
         """Return detections with stitched track IDs when enabled."""
         if not self.config.enabled:
@@ -88,15 +136,16 @@ class TrackStitcher:
             if raw_id is None or raw_id < 0:
                 remapped.append(detection)
                 continue
+            appearance = _appearance_histogram(frame, detection.bbox) if self.config.appearance_weight > 0 else None
             root_id = self._raw_to_root.get(raw_id)
             if root_id is None:
-                root_id = self._choose_root(raw_id, detection.bbox, frame_index, used_roots)
+                root_id = self._choose_root(raw_id, detection.bbox, frame_index, used_roots, appearance)
                 self._raw_to_root[raw_id] = root_id
             if root_id in used_roots and root_id != raw_id:
                 root_id = raw_id
                 self._raw_to_root[raw_id] = raw_id
             used_roots.add(root_id)
-            self._update_state(raw_id, root_id, detection.bbox, frame_index)
+            self._update_state(raw_id, root_id, detection.bbox, frame_index, appearance)
             remapped.append(
                 NormalizedDetection(
                     track_id=root_id,
@@ -117,6 +166,7 @@ class TrackStitcher:
         box: BBox,
         frame_index: int,
         used_roots: set[int],
+        appearance: np.ndarray | None,
     ) -> int:
         candidates: list[tuple[float, int]] = []
         center = _centroid(box)
@@ -127,7 +177,7 @@ class TrackStitcher:
             gap = frame_index - state.last_frame
             if gap <= 0 or gap > self.config.gap_frames:
                 continue
-            cost = self._candidate_cost(state, center, width, gap)
+            cost = self._candidate_cost(state, center, width, gap, appearance)
             if cost is not None:
                 candidates.append((cost, state.root_id))
 
@@ -147,6 +197,7 @@ class TrackStitcher:
         center: tuple[float, float],
         width: float,
         gap: int,
+        appearance: np.ndarray | None,
     ) -> float | None:
         old_center = _centroid(state.last_box)
         raw_distance = math.hypot(center[0] - old_center[0], center[1] - old_center[1])
@@ -171,11 +222,27 @@ class TrackStitcher:
         implied_speed_heads = distance / max(1, gap) / max(1.0, width)
         if distance > threshold or implied_speed_heads > self.config.max_speed_heads:
             return None
+        appearance_mismatch = 0.0
+        if self.config.appearance_weight > 0:
+            appearance_mismatch = _appearance_cost(state.last_appearance, appearance)
+            if appearance_mismatch > self.config.max_appearance_cost:
+                return None
         spatial_cost = distance / max(1.0, threshold)
-        motion_weight = max(0.0, 1.0 - self.config.direction_weight)
-        return motion_weight * spatial_cost + self.config.direction_weight * direction_mismatch
+        motion_weight = max(0.0, 1.0 - self.config.direction_weight - self.config.appearance_weight)
+        return (
+            motion_weight * spatial_cost
+            + self.config.direction_weight * direction_mismatch
+            + self.config.appearance_weight * appearance_mismatch
+        )
 
-    def _update_state(self, raw_id: int, root_id: int, box: BBox, frame_index: int) -> None:
+    def _update_state(
+        self,
+        raw_id: int,
+        root_id: int,
+        box: BBox,
+        frame_index: int,
+        appearance: np.ndarray | None,
+    ) -> None:
         state = self._states.get(raw_id)
         center = _centroid(box)
         width = _box_width(box)
@@ -188,6 +255,7 @@ class TrackStitcher:
                 last_box=box,
                 centers=[(frame_index, center)],
                 widths=[width],
+                last_appearance=appearance,
             )
             return
         state.root_id = root_id
@@ -195,6 +263,8 @@ class TrackStitcher:
         state.last_box = box
         state.centers.append((frame_index, center))
         state.widths.append(width)
+        if appearance is not None:
+            state.last_appearance = appearance
         if len(state.centers) > self.config.history_points:
             state.centers = state.centers[-self.config.history_points :]
         if len(state.widths) > self.config.history_points:

@@ -533,6 +533,8 @@ def build_track_stitcher(settings: AppSettings, detector_mode: str) -> TrackStit
         mode=str(raw.get("mode", "observation")),
         ambiguity_ratio=float(raw.get("ambiguity_ratio", 0.95)),
         max_speed_heads=float(raw.get("max_speed_heads", 0.85)),
+        appearance_weight=float(raw.get("appearance_weight", 0.0)),
+        max_appearance_cost=float(raw.get("max_appearance_cost", 1.0)),
         direction_weight=float(raw.get("direction_weight", 0.12)),
         max_direction_cost=float(raw.get("max_direction_cost", 0.85)),
         max_jump_heads=float(raw.get("max_jump_heads", 7.5)),

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import numpy as np
+
 from src.vision.detector import NormalizedDetection
 from src.vision.track_stitcher import TrackStitcher, TrackStitcherConfig
 
@@ -84,3 +86,29 @@ def test_track_stitcher_prevents_same_root_in_one_frame() -> None:
     )
 
     assert [det.track_id for det in result] == [1, 3]
+
+
+def test_track_stitcher_rejects_appearance_mismatch() -> None:
+    stitcher = TrackStitcher(
+        TrackStitcherConfig(
+            enabled=True,
+            gap_frames=20,
+            dist_heads=5.0,
+            mode="velocity",
+            ambiguity_ratio=1.0,
+            max_speed_heads=2.0,
+            max_jump_heads=6.0,
+            appearance_weight=0.2,
+            max_appearance_cost=0.1,
+        )
+    )
+    red_frame = np.zeros((240, 320, 3), dtype=np.uint8)
+    red_frame[:, :] = (0, 0, 255)
+    blue_frame = np.zeros((240, 320, 3), dtype=np.uint8)
+    blue_frame[:, :] = (255, 0, 0)
+
+    stitcher.update([_det(1, (100, 100, 120, 120), 0)], frame_index=0, frame=red_frame)
+    stitcher.update([_det(1, (104, 100, 124, 120), 1)], frame_index=1, frame=red_frame)
+    result = stitcher.update([_det(2, (128, 100, 148, 120), 8)], frame_index=8, frame=blue_frame)
+
+    assert result[0].track_id == 2

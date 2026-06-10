@@ -107,7 +107,7 @@ class FrameProcessor:
                     timestamp=timestamp,
                 )
             if self.track_stitcher is not None:
-                fused = self.track_stitcher.update(fused, frame_index=frame_index)
+                fused = self.track_stitcher.update(fused, frame_index=frame_index, frame=prepared)
             return self._build_result(prepared, fused, frame_index=frame_index, timestamp=timestamp)
 
         if self.use_tracking and self.tracker is not None:
@@ -120,7 +120,7 @@ class FrameProcessor:
             if self.detection_filter is not None:
                 normalized = self.detection_filter.filter(normalized)
             if self.track_stitcher is not None:
-                normalized = self.track_stitcher.update(normalized, frame_index=frame_index)
+                normalized = self.track_stitcher.update(normalized, frame_index=frame_index, frame=prepared)
             return self._build_result(prepared, normalized, frame_index=frame_index, timestamp=timestamp)
 
         if self.detector is None:
