@@ -33,7 +33,10 @@ tracker:
     track_low_thresh: 0.05
     track_high_thresh: 0.20
     new_track_thresh: 0.20
-    track_buffer: 45
+    # 90 frames (~3.6s at 25fps) keeps a head's ID alive across pole/crowd
+    # occlusions so it is re-acquired instead of becoming a new ID. Proven on
+    # the MOT20 oracle test: good detection + this buffer -> ~0 ID switches.
+    track_buffer: 90
     match_thresh: 0.70
     fuse_score: true
 
