@@ -55,6 +55,8 @@ class Arm:
     stitch_gap_frames: int | None = None
     stitch_dist_heads: float | None = None
     stitch_mode: str | None = None
+    stitch_ambiguity_ratio: float | None = None
+    stitch_max_speed_heads: float | None = None
 
 
 @dataclass(frozen=True)
@@ -72,6 +74,8 @@ class StabilityConfig:
     stitch_gap_frames: int = 45
     stitch_dist_heads: float = 1.5
     stitch_mode: str = "spatial"
+    stitch_ambiguity_ratio: float = 0.80
+    stitch_max_speed_heads: float = 0.45
     switch_lookback: int = 45
 
 
@@ -79,6 +83,19 @@ DEFAULT_ARMS = (
     Arm("baseline", conf=0.16, activation=0.45, consec=1, expand=False, stitch=False),
     Arm("fix_0p16", conf=0.16, activation=0.20, consec=3, expand=True, stitch=True),
     Arm("fix_0p30", conf=0.30, activation=0.30, consec=3, expand=True, stitch=True),
+    Arm(
+        "fix_0p16_safe",
+        conf=0.16,
+        activation=0.20,
+        consec=3,
+        expand=True,
+        stitch=True,
+        stitch_gap_frames=120,
+        stitch_dist_heads=2.5,
+        stitch_mode="velocity",
+        stitch_ambiguity_ratio=0.65,
+        stitch_max_speed_heads=0.35,
+    ),
     Arm(
         "fix_0p16_loose",
         conf=0.16,
@@ -89,6 +106,8 @@ DEFAULT_ARMS = (
         stitch_gap_frames=90,
         stitch_dist_heads=3.0,
         stitch_mode="velocity",
+        stitch_ambiguity_ratio=0.80,
+        stitch_max_speed_heads=0.45,
     ),
     Arm(
         "fix_0p16_wide",
@@ -100,6 +119,8 @@ DEFAULT_ARMS = (
         stitch_gap_frames=150,
         stitch_dist_heads=4.0,
         stitch_mode="velocity",
+        stitch_ambiguity_ratio=1.0,
+        stitch_max_speed_heads=0.70,
     ),
 )
 
@@ -378,6 +399,8 @@ def stitch_tracks(
     gap_frames: int,
     dist_heads: float,
     mode: str = "spatial",
+    ambiguity_ratio: float = 0.80,
+    max_speed_heads: float = 0.45,
 ) -> dict[int, int]:
     """Merge short-gap track fragments by spatial continuity."""
     info: dict[int, dict[str, object]] = {}
@@ -429,8 +452,7 @@ def stitch_tracks(
         born_frame = int(born["first"])
         born_center = born["first_c"]  # type: ignore[assignment]
         born_width = float(np.median(born["widths"]))  # type: ignore[arg-type]
-        best_id: int | None = None
-        best_dist: float | None = None
+        candidates: list[tuple[float, int]] = []
         for old_id, old in info.items():
             if old_id == born_id:
                 continue
@@ -448,8 +470,20 @@ def stitch_tracks(
                 )
                 distance = min(distance, predicted_distance)
             threshold = dist_heads * max(born_width, float(np.median(old["widths"])))  # type: ignore[arg-type]
-            if distance <= threshold and (best_dist is None or distance < best_dist):
-                best_id, best_dist = old_id, distance
+            implied_speed_heads = distance / max(1, gap) / max(1.0, born_width)
+            if distance <= threshold and implied_speed_heads <= max_speed_heads:
+                candidates.append((distance / max(1.0, threshold), old_id))
+        if not candidates:
+            continue
+        candidates.sort(key=lambda item: item[0])
+        best_score, best_id = candidates[0]
+        if len(candidates) > 1:
+            second_score = candidates[1][0]
+            # If the best candidate is not clearly better, do not stitch. Dense
+            # crowds often have several plausible nearby heads; a skipped stitch
+            # is safer than assigning one ID to two different people.
+            if second_score > 0 and best_score / second_score > ambiguity_ratio:
+                continue
         if best_id is not None:
             union(best_id, born_id)
     return {track_id: find(track_id) for track_id in info}
@@ -511,6 +545,8 @@ def run_arm(
     stitch_gap_frames = arm.stitch_gap_frames or cfg.stitch_gap_frames
     stitch_dist_heads = arm.stitch_dist_heads or cfg.stitch_dist_heads
     stitch_mode = arm.stitch_mode or cfg.stitch_mode
+    stitch_ambiguity_ratio = arm.stitch_ambiguity_ratio or cfg.stitch_ambiguity_ratio
+    stitch_max_speed_heads = arm.stitch_max_speed_heads or cfg.stitch_max_speed_heads
 
     per_frame: list[list[tuple[int, tuple[float, float, float, float], float]]] = []
     capture = cv2.VideoCapture(str(video_path))
@@ -535,6 +571,8 @@ def run_arm(
             gap_frames=stitch_gap_frames,
             dist_heads=stitch_dist_heads,
             mode=stitch_mode,
+            ambiguity_ratio=stitch_ambiguity_ratio,
+            max_speed_heads=stitch_max_speed_heads,
         )
         if arm.stitch
         else {}
@@ -666,6 +704,8 @@ def run_arm(
         "stitch_gap_frames": stitch_gap_frames if arm.stitch else 0,
         "stitch_dist_heads": stitch_dist_heads if arm.stitch else 0,
         "stitch_mode": stitch_mode if arm.stitch else "none",
+        "stitch_ambiguity_ratio": stitch_ambiguity_ratio if arm.stitch else 0,
+        "stitch_max_speed_heads": stitch_max_speed_heads if arm.stitch else 0,
         "peak_concurrent_confirmed": peak_concurrent,
         "median_concurrent_confirmed": round(median_concurrent, 2),
         "raw_unique_ids_prestitch": raw_unique,
@@ -752,6 +792,8 @@ def main() -> int:
             "stitch_gap_frames",
             "stitch_dist_heads",
             "stitch_mode",
+            "stitch_ambiguity_ratio",
+            "stitch_max_speed_heads",
             "peak_concurrent_confirmed",
             "median_concurrent_confirmed",
             "raw_unique_ids_prestitch",
