@@ -57,6 +57,8 @@ class Arm:
     stitch_mode: str | None = None
     stitch_ambiguity_ratio: float | None = None
     stitch_max_speed_heads: float | None = None
+    stitch_appearance_weight: float | None = None
+    stitch_max_appearance_cost: float | None = None
 
 
 @dataclass(frozen=True)
@@ -76,6 +78,8 @@ class StabilityConfig:
     stitch_mode: str = "spatial"
     stitch_ambiguity_ratio: float = 0.80
     stitch_max_speed_heads: float = 0.45
+    stitch_appearance_weight: float = 0.0
+    stitch_max_appearance_cost: float = 1.0
     switch_lookback: int = 45
 
 
@@ -108,6 +112,66 @@ DEFAULT_ARMS = (
         stitch_mode="velocity",
         stitch_ambiguity_ratio=0.80,
         stitch_max_speed_heads=0.45,
+    ),
+    Arm(
+        "fix_0p16_loose_app",
+        conf=0.16,
+        activation=0.20,
+        consec=3,
+        expand=True,
+        stitch=True,
+        stitch_gap_frames=120,
+        stitch_dist_heads=3.4,
+        stitch_mode="velocity",
+        stitch_ambiguity_ratio=0.78,
+        stitch_max_speed_heads=0.45,
+        stitch_appearance_weight=0.35,
+        stitch_max_appearance_cost=0.72,
+    ),
+    Arm(
+        "fix_0p16_loose_app_min",
+        conf=0.16,
+        activation=0.20,
+        consec=3,
+        expand=True,
+        stitch=True,
+        stitch_gap_frames=150,
+        stitch_dist_heads=4.0,
+        stitch_mode="velocity",
+        stitch_ambiguity_ratio=0.88,
+        stitch_max_speed_heads=0.60,
+        stitch_appearance_weight=0.25,
+        stitch_max_appearance_cost=0.80,
+    ),
+    Arm(
+        "fix_0p16_wide_app",
+        conf=0.16,
+        activation=0.20,
+        consec=3,
+        expand=True,
+        stitch=True,
+        stitch_gap_frames=150,
+        stitch_dist_heads=4.0,
+        stitch_mode="velocity",
+        stitch_ambiguity_ratio=0.88,
+        stitch_max_speed_heads=0.65,
+        stitch_appearance_weight=0.45,
+        stitch_max_appearance_cost=0.65,
+    ),
+    Arm(
+        "fix_0p16_wide_app_min",
+        conf=0.16,
+        activation=0.20,
+        consec=3,
+        expand=True,
+        stitch=True,
+        stitch_gap_frames=180,
+        stitch_dist_heads=4.5,
+        stitch_mode="velocity",
+        stitch_ambiguity_ratio=0.92,
+        stitch_max_speed_heads=0.70,
+        stitch_appearance_weight=0.35,
+        stitch_max_appearance_cost=0.76,
     ),
     Arm(
         "fix_0p16_wide",
@@ -260,6 +324,57 @@ def expand_box(
     )
 
 
+def appearance_crop_box(
+    box: tuple[float, float, float, float],
+    frame_shape: tuple[int, int, int],
+) -> tuple[int, int, int, int]:
+    """Return a head+upper-shoulder crop box clipped to the frame."""
+    height, width = frame_shape[:2]
+    x1, y1, x2, y2 = box
+    bw, bh = max(1.0, x2 - x1), max(1.0, y2 - y1)
+    cx = (x1 + x2) / 2.0
+    # Heads alone are weak appearance cues. Include a little context below the
+    # head so clothing/shoulder color can disambiguate adjacent people.
+    crop_w = bw * 2.2
+    crop_h = bh * 3.0
+    left = max(0, int(round(cx - crop_w / 2.0)))
+    right = min(width, int(round(cx + crop_w / 2.0)))
+    top = max(0, int(round(y1 - bh * 0.25)))
+    bottom = min(height, int(round(y1 + crop_h)))
+    if right <= left or bottom <= top:
+        return (0, 0, 0, 0)
+    return (left, top, right, bottom)
+
+
+def appearance_histogram(
+    frame: np.ndarray,
+    box: tuple[float, float, float, float],
+) -> np.ndarray | None:
+    """Compute a compact HSV color histogram for head+shoulder context."""
+    left, top, right, bottom = appearance_crop_box(box, frame.shape)
+    if right <= left or bottom <= top:
+        return None
+    crop = frame[top:bottom, left:right]
+    if crop.size == 0:
+        return None
+    hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+    hist = cv2.calcHist([hsv], [0, 1], None, [12, 8], [0, 180, 0, 256])
+    hist = cv2.normalize(hist, hist).flatten().astype(np.float32)
+    if not np.isfinite(hist).all() or float(hist.sum()) <= 0:
+        return None
+    return hist
+
+
+def appearance_cost(a: np.ndarray | None, b: np.ndarray | None) -> float:
+    """Return 0..1 histogram distance; 1 means unknown or very different."""
+    if a is None or b is None:
+        return 1.0
+    similarity = float(cv2.compareHist(a.astype(np.float32), b.astype(np.float32), cv2.HISTCMP_CORREL))
+    if not math.isfinite(similarity):
+        return 1.0
+    return max(0.0, min(1.0, (1.0 - similarity) / 2.0))
+
+
 def nms(detections: Iterable[NormalizedDetection], iou_threshold: float) -> list[NormalizedDetection]:
     """Simple NMS over normalized detections."""
     kept: list[NormalizedDetection] = []
@@ -401,6 +516,9 @@ def stitch_tracks(
     mode: str = "spatial",
     ambiguity_ratio: float = 0.80,
     max_speed_heads: float = 0.45,
+    appearance_by_track: dict[int, dict[str, np.ndarray | None]] | None = None,
+    appearance_weight: float = 0.0,
+    max_appearance_cost: float = 1.0,
 ) -> dict[int, int]:
     """Merge short-gap track fragments by spatial continuity."""
     info: dict[int, dict[str, object]] = {}
@@ -478,7 +596,16 @@ def stitch_tracks(
             threshold = dist_heads * max(born_width, float(np.median(old["widths"])))  # type: ignore[arg-type]
             implied_speed_heads = distance / max(1, gap) / max(1.0, born_width)
             if distance <= threshold and implied_speed_heads <= max_speed_heads:
-                candidates.append((distance / max(1.0, threshold), old_id))
+                spatial_cost = distance / max(1.0, threshold)
+                app_cost = 0.0
+                if appearance_weight > 0.0:
+                    old_hist = (appearance_by_track or {}).get(old_id, {}).get("last")
+                    born_hist = (appearance_by_track or {}).get(born_id, {}).get("first")
+                    app_cost = appearance_cost(old_hist, born_hist)
+                    if app_cost > max_appearance_cost:
+                        continue
+                total_cost = (1.0 - appearance_weight) * spatial_cost + appearance_weight * app_cost
+                candidates.append((total_cost, old_id))
         if not candidates:
             continue
         candidates.sort(key=lambda item: item[0])
@@ -553,8 +680,15 @@ def run_arm(
     stitch_mode = arm.stitch_mode or cfg.stitch_mode
     stitch_ambiguity_ratio = arm.stitch_ambiguity_ratio or cfg.stitch_ambiguity_ratio
     stitch_max_speed_heads = arm.stitch_max_speed_heads or cfg.stitch_max_speed_heads
+    stitch_appearance_weight = arm.stitch_appearance_weight if arm.stitch_appearance_weight is not None else cfg.stitch_appearance_weight
+    stitch_max_appearance_cost = (
+        arm.stitch_max_appearance_cost
+        if arm.stitch_max_appearance_cost is not None
+        else cfg.stitch_max_appearance_cost
+    )
 
     per_frame: list[list[tuple[int, tuple[float, float, float, float], float]]] = []
+    appearance_by_track: dict[int, dict[str, np.ndarray | None]] = {}
     capture = cv2.VideoCapture(str(video_path))
     frame_index = 0
     with tqdm(total=total_frames if total_frames > 0 else None, desc=f"{arm.name} track") as progress:
@@ -566,7 +700,14 @@ def run_arm(
                 break
             raw = detector.detect(frame, frame_index=frame_index, timestamp=frame_index / fps).detections
             raw = nms(raw, cfg.head_nms_iou)
-            per_frame.append(tracker.update(raw))
+            tracked = tracker.update(raw)
+            for track_id, box, _conf in tracked:
+                hist = appearance_histogram(frame, box) if stitch_appearance_weight > 0.0 else None
+                if track_id not in appearance_by_track:
+                    appearance_by_track[track_id] = {"first": hist, "last": hist}
+                elif hist is not None:
+                    appearance_by_track[track_id]["last"] = hist
+            per_frame.append(tracked)
             frame_index += 1
             progress.update(1)
     capture.release()
@@ -579,6 +720,9 @@ def run_arm(
             mode=stitch_mode,
             ambiguity_ratio=stitch_ambiguity_ratio,
             max_speed_heads=stitch_max_speed_heads,
+            appearance_by_track=appearance_by_track,
+            appearance_weight=stitch_appearance_weight,
+            max_appearance_cost=stitch_max_appearance_cost,
         )
         if arm.stitch
         else {}
@@ -592,7 +736,7 @@ def run_arm(
         for track_id, box, _conf in detections:
             rid = root_id(track_id)
             stats[rid]["frames"].add(frame_number)  # type: ignore[union-attr]
-            stats[rid]["boxes"].append(box)  # type: ignore[union-attr]
+            stats[rid]["boxes"].append((frame_number, box))  # type: ignore[union-attr]
 
     visible = {rid: len(row["frames"]) for rid, row in stats.items()}
     confirmed = {rid for rid, count in visible.items() if count >= cfg.min_confirmed_age}
@@ -622,8 +766,8 @@ def run_arm(
     median_lifespan = float(np.median([visible[rid] for rid in confirmed])) if confirmed else 0.0
     inflation = confirmed_unique / peak_concurrent if peak_concurrent else float("nan")
 
-    first_center = {rid: centroid(stats[rid]["boxes"][0]) for rid in confirmed}  # type: ignore[index]
-    last_center = {rid: centroid(stats[rid]["boxes"][-1]) for rid in confirmed}  # type: ignore[index]
+    first_center = {rid: centroid(stats[rid]["boxes"][0][1]) for rid in confirmed}  # type: ignore[index]
+    last_center = {rid: centroid(stats[rid]["boxes"][-1][1]) for rid in confirmed}  # type: ignore[index]
     switch_events = 0
     for rid in confirmed:
         for other in confirmed:
@@ -635,10 +779,27 @@ def run_arm(
                     first_center[rid][0] - last_center[other][0],
                     first_center[rid][1] - last_center[other][1],
                 )
-                first_box = stats[rid]["boxes"][0]  # type: ignore[index]
+                first_box = stats[rid]["boxes"][0][1]  # type: ignore[index]
                 if distance <= stitch_dist_heads * box_width(first_box):
                     switch_events += 1
                     break
+
+    jump_events = 0
+    max_gap_jump_heads = 0.0
+    for rid in confirmed:
+        observations = sorted(stats[rid]["boxes"], key=lambda item: item[0])  # type: ignore[arg-type]
+        for (prev_frame, prev_box), (next_frame, next_box) in zip(observations, observations[1:]):
+            gap = int(next_frame) - int(prev_frame)
+            if gap <= 1:
+                continue
+            distance = math.hypot(
+                centroid(next_box)[0] - centroid(prev_box)[0],
+                centroid(next_box)[1] - centroid(prev_box)[1],
+            )
+            distance_heads = distance / max(1.0, box_width(prev_box), box_width(next_box))
+            max_gap_jump_heads = max(max_gap_jump_heads, distance_heads)
+            if gap <= stitch_gap_frames and distance_heads > stitch_dist_heads:
+                jump_events += 1
 
     gt_errors = []
     for frame_id, gt_count in MANUAL_GT.items():
@@ -721,6 +882,8 @@ def run_arm(
         "stitch_mode": stitch_mode if arm.stitch else "none",
         "stitch_ambiguity_ratio": stitch_ambiguity_ratio if arm.stitch else 0,
         "stitch_max_speed_heads": stitch_max_speed_heads if arm.stitch else 0,
+        "stitch_appearance_weight": stitch_appearance_weight if arm.stitch else 0,
+        "stitch_max_appearance_cost": stitch_max_appearance_cost if arm.stitch else 0,
         "peak_concurrent_confirmed": peak_concurrent,
         "median_concurrent_confirmed": round(median_concurrent, 2),
         "raw_unique_ids_prestitch": raw_unique,
@@ -731,6 +894,8 @@ def run_arm(
         "duplicate_id_instances": duplicate_id_instances,
         "max_same_id_instances": max_same_id_instances,
         "residual_switch_events": switch_events,
+        "gap_jump_events": jump_events,
+        "max_gap_jump_heads": round(max_gap_jump_heads, 2),
         "short_lived_tracks": short_lived,
         "median_confirmed_lifespan": round(median_lifespan, 2),
         "gt_mae": round(gt_mae, 2) if gt_mae == gt_mae else None,
@@ -812,6 +977,8 @@ def main() -> int:
             "stitch_mode",
             "stitch_ambiguity_ratio",
             "stitch_max_speed_heads",
+            "stitch_appearance_weight",
+            "stitch_max_appearance_cost",
             "peak_concurrent_confirmed",
             "median_concurrent_confirmed",
             "raw_unique_ids_prestitch",
@@ -822,6 +989,8 @@ def main() -> int:
             "duplicate_id_instances",
             "max_same_id_instances",
             "residual_switch_events",
+            "gap_jump_events",
+            "max_gap_jump_heads",
             "gt_mae",
         ]
     ].to_string(index=False))
