@@ -413,15 +413,18 @@ def stitch_tracks(
                     "first_c": centroid(box),
                     "last_c": centroid(box),
                     "centers": [],
+                    "frames": set(),
                     "widths": [box_width(box)],
                 }
             row = info[track_id]
             row["last"] = frame_index
             row["last_c"] = centroid(box)
             row["centers"].append((frame_index, centroid(box)))  # type: ignore[union-attr]
+            row["frames"].add(frame_index)  # type: ignore[union-attr]
             row["widths"].append(box_width(box))  # type: ignore[union-attr]
 
     parent = {track_id: track_id for track_id in info}
+    component_frames = {track_id: set(row["frames"]) for track_id, row in info.items()}
 
     def find(track_id: int) -> int:
         while parent[track_id] != track_id:
@@ -432,7 +435,10 @@ def stitch_tracks(
     def union(earlier: int, later: int) -> None:
         root_a, root_b = find(earlier), find(later)
         if root_a != root_b:
+            if component_frames[root_a] & component_frames[root_b]:
+                return
             parent[root_b] = root_a
+            component_frames[root_a].update(component_frames[root_b])
 
     def velocity(track_id: int, *, tail: bool) -> tuple[float, float]:
         centers = info[track_id]["centers"]  # type: ignore[assignment]
@@ -594,9 +600,18 @@ def run_arm(
     last = {rid: max(row["frames"]) for rid, row in stats.items() if row["frames"]}  # type: ignore[arg-type]
 
     per_frame_counts = []
+    duplicate_id_frames = 0
+    duplicate_id_instances = 0
+    max_same_id_instances = 1
     for detections in per_frame:
-        ids = {root_id(track_id) for track_id, _box, _conf in detections if root_id(track_id) in confirmed}
-        per_frame_counts.append(len(ids))
+        frame_ids = [root_id(track_id) for track_id, _box, _conf in detections if root_id(track_id) in confirmed]
+        unique_frame_ids = set(frame_ids)
+        if len(frame_ids) != len(unique_frame_ids):
+            duplicate_id_frames += 1
+            duplicate_id_instances += len(frame_ids) - len(unique_frame_ids)
+            for frame_id in unique_frame_ids:
+                max_same_id_instances = max(max_same_id_instances, frame_ids.count(frame_id))
+        per_frame_counts.append(len(unique_frame_ids))
 
     raw_unique = len({track_id for detections in per_frame for track_id, _box, _conf in detections})
     unique_poststitch = len(stats)
@@ -712,6 +727,9 @@ def run_arm(
         "unique_ids_poststitch": unique_poststitch,
         "confirmed_unique": confirmed_unique,
         "inflation_factor": round(inflation, 2) if inflation == inflation else None,
+        "duplicate_id_frames": duplicate_id_frames,
+        "duplicate_id_instances": duplicate_id_instances,
+        "max_same_id_instances": max_same_id_instances,
         "residual_switch_events": switch_events,
         "short_lived_tracks": short_lived,
         "median_confirmed_lifespan": round(median_lifespan, 2),
@@ -800,6 +818,9 @@ def main() -> int:
             "unique_ids_poststitch",
             "confirmed_unique",
             "inflation_factor",
+            "duplicate_id_frames",
+            "duplicate_id_instances",
+            "max_same_id_instances",
             "residual_switch_events",
             "gt_mae",
         ]
