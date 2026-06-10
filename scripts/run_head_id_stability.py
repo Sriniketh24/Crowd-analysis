@@ -343,8 +343,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--arms",
         nargs="+",
-        default=["baseline", "fix_0p16", "fix_0p30"],
-        choices=[arm.name for arm in DEFAULT_ARMS],
+        default=None,
+        help="Arm names to run. With --sweep-profiles, generated sweep_* names are also valid.",
     )
     parser.add_argument(
         "--sweep-profiles",
@@ -1245,10 +1245,25 @@ def main() -> int:
     model_path = resolve_model(args.model)
     label = model_label_for(model_path, args.model_label)
     cfg = StabilityConfig(imgsz=args.imgsz, stitch_mode=args.stitch_mode)
-    selected = {arm.name: arm for arm in DEFAULT_ARMS}
-    arms = [selected[name] for name in args.arms]
+    generated_arms: list[Arm] = []
     for profile in args.sweep_profiles:
-        arms.extend(sweep_arms(profile, limit=args.sweep_limit))
+        generated_arms.extend(sweep_arms(profile, limit=args.sweep_limit))
+
+    available = {arm.name: arm for arm in (*DEFAULT_ARMS, *generated_arms)}
+    requested_names = args.arms or ["baseline", "fix_0p16", "fix_0p30"]
+    unknown_names = [name for name in requested_names if name not in available]
+    if unknown_names:
+        print(f"Unknown arm name(s): {unknown_names}")
+        print("Available arms:")
+        for name in sorted(available):
+            print(f"  {name}")
+        return 2
+
+    arms = [available[name] for name in requested_names]
+    requested_sweep_arm = any(name.startswith("sweep_") for name in requested_names)
+    if args.sweep_profiles and not requested_sweep_arm:
+        requested_set = set(requested_names)
+        arms.extend(arm for arm in generated_arms if arm.name not in requested_set)
 
     out_dir = args.output_root / video_path.stem / label
     out_dir.mkdir(parents=True, exist_ok=True)
