@@ -35,10 +35,15 @@ class VideoWriter:
 
     def _open(self, frame_size: tuple[int, int]) -> None:
         """Open writer handle using known frame size."""
-        codec = cv2.VideoWriter_fourcc(*self.fourcc)
-        self._writer = cv2.VideoWriter(self.output_path, codec, self.fps, frame_size)
-        if not self._writer.isOpened():
-            raise RuntimeError(f"Unable to open output video writer at: {self.output_path}")
+        for fourcc in (self.fourcc, "mp4v", "MJPG", "XVID"):
+            codec = cv2.VideoWriter_fourcc(*fourcc)
+            writer = cv2.VideoWriter(self.output_path, codec, self.fps, frame_size)
+            if writer.isOpened():
+                self._writer = writer
+                self.fourcc = fourcc
+                return
+            writer.release()
+        raise RuntimeError(f"Unable to open output video writer at: {self.output_path}")
 
     def write(self, frame: np.ndarray) -> None:
         """Write one frame to output video."""

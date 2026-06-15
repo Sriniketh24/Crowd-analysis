@@ -1,0 +1,57 @@
+{
+  "camera_id": "demo_platform_hybrid",
+  "frame_width": 1280,
+  "frame_height": 720,
+  "_note": "Hybrid example for data/input_videos/sample.mp4. near_body_zone covers the near/lower platform where full bodies are visible (body detector); far_head_zone covers the far/upper platform where people are small/dense (head detector). Each model only runs on the rectangular crop bounding its ROI group, and detections are post-filtered by these polygons before fusion.",
+  "near_body_zone": [
+    [135, 720],
+    [430, 470],
+    [620, 410],
+    [905, 410],
+    [1080, 470],
+    [1160, 720]
+  ],
+  "far_head_zone": [
+    [560, 410],
+    [620, 300],
+    [755, 170],
+    [965, 95],
+    [1125, 110],
+    [1010, 235],
+    [905, 410]
+  ],
+  "zones": [
+    {
+      "id": "main_platform_waiting",
+      "name": "Main Platform Waiting Area",
+      "polygon": [[435, 720], [500, 520], [590, 315], [755, 170], [965, 95], [1125, 110], [1005, 215], [875, 310], [790, 540], [735, 720]],
+      "warning_threshold": 4,
+      "critical_threshold": 9
+    },
+    {
+      "id": "platform_movement_path",
+      "name": "Platform Movement Path",
+      "polygon": [[145, 720], [315, 610], [430, 450], [535, 260], [650, 155], [770, 125], [710, 250], [640, 390], [565, 560], [535, 720]],
+      "warning_threshold": 3,
+      "critical_threshold": 7
+    },
+    {
+      "id": "train_side_edge",
+      "name": "Train-Side Platform Edge",
+      "polygon": [[735, 720], [775, 555], [820, 395], [875, 235], [965, 125], [1080, 125], [1010, 210], [925, 285], [850, 445], [800, 625], [775, 720]],
+      "warning_threshold": 2,
+      "critical_threshold": 6
+    }
+  ],
+  "lines": [
+    {
+      "id": "central_flow_line",
+      "name": "Central Platform Flow Line",
+      "start": [560, 495],
+      "end": [875, 360],
+      "in_label": "TOWARD_TRAIN",
+      "out_label": "AWAY_FROM_TRAIN",
+      "direction_hint": "Crossing from the movement path toward the train-side edge counts as TOWARD_TRAIN for this sample."
+    }
+  ]
+}

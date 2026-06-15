@@ -110,6 +110,37 @@ def point_from_bbox(bbox: BBox, strategy: PointStrategy = "bottom_center") -> Po
     raise ValueError("point strategy must be either 'bottom_center' or 'center'")
 
 
+def extract_source_type(track: object) -> str | None:
+    """Extract a detection source ('body'/'head') from dict/object tracks."""
+    if isinstance(track, dict):
+        raw = track.get("source_type") or track.get("detector_mode")
+    else:
+        raw = getattr(track, "source_type", None) or getattr(track, "detector_mode", None)
+    return str(raw) if raw is not None else None
+
+
+def resolve_anchor_strategy(
+    track: object,
+    default_strategy: PointStrategy,
+    *,
+    per_detection: bool = False,
+) -> PointStrategy:
+    """Choose the anchor strategy for one track.
+
+    With ``per_detection`` enabled (hybrid mode) head detections use the bbox
+    center and body detections use the bottom-center, regardless of the manager
+    default. Otherwise the manager default is used for every track.
+    """
+    if not per_detection:
+        return default_strategy
+    source = extract_source_type(track)
+    if source == "head":
+        return "center"
+    if source == "body":
+        return "bottom_center"
+    return default_strategy
+
+
 def _point_on_segment(point: Point, seg_start: Point, seg_end: Point) -> bool:
     """Return True if point lies exactly on a segment."""
     px, py = point
@@ -149,6 +180,7 @@ def count_zone_occupancy(
     zone_polygon: list[list[int]],
     *,
     point_strategy: PointStrategy = "bottom_center",
+    per_detection_anchor: bool = False,
 ) -> int:
     """Return people count inside a configured polygon zone."""
     polygon = [(float(x), float(y)) for x, y in zone_polygon]
@@ -157,7 +189,10 @@ def count_zone_occupancy(
         bbox = extract_bbox(track)
         if bbox is None:
             continue
-        if point_in_polygon(point_from_bbox(bbox, point_strategy), polygon):
+        strategy = resolve_anchor_strategy(
+            track, point_strategy, per_detection=per_detection_anchor
+        )
+        if point_in_polygon(point_from_bbox(bbox, strategy), polygon):
             count += 1
     return count
 
@@ -170,10 +205,12 @@ class ZoneManager:
         zones: list[ZoneConfig],
         *,
         point_strategy: PointStrategy = "bottom_center",
+        per_detection_anchor: bool = False,
     ) -> None:
         point_from_bbox((0.0, 0.0, 1.0, 1.0), point_strategy)
         self.zones = zones
         self.point_strategy = point_strategy
+        self.per_detection_anchor = per_detection_anchor
         self.zone_states: dict[str, ZoneState] = {
             zone.id: ZoneState(config=zone) for zone in zones
         }
@@ -184,11 +221,16 @@ class ZoneManager:
         config_path: str | Path,
         *,
         point_strategy: PointStrategy = "bottom_center",
+        per_detection_anchor: bool = False,
     ) -> "ZoneManager":
         """Load zones from a JSON configuration file."""
         config = json.loads(Path(config_path).read_text(encoding="utf-8"))
         zone_configs = [ZoneConfig.from_dict(zone) for zone in config.get("zones", [])]
-        return cls(zones=zone_configs, point_strategy=point_strategy)
+        return cls(
+            zones=zone_configs,
+            point_strategy=point_strategy,
+            per_detection_anchor=per_detection_anchor,
+        )
 
     def update(self, tracks: list[object]) -> dict[str, int]:
         """Update occupancy and unique-track counters for all zones."""
@@ -200,7 +242,10 @@ class ZoneManager:
             track_id = extract_track_id(track)
             if bbox is None or track_id is None:
                 continue
-            track_point = point_from_bbox(bbox, self.point_strategy)
+            strategy = resolve_anchor_strategy(
+                track, self.point_strategy, per_detection=self.per_detection_anchor
+            )
+            track_point = point_from_bbox(bbox, strategy)
             for state in self.zone_states.values():
                 if point_in_polygon(track_point, state.config.polygon):
                     state.current_track_ids.add(track_id)

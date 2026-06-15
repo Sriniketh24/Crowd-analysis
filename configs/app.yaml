@@ -14,8 +14,8 @@ model:
   imgsz: 640
   augment: false
   max_det: 300
-  head_confidence: 0.25
-  head_imgsz: 1280
+  head_confidence: 0.15
+  head_imgsz: 1536
   head_max_det: 1000
   half: false
   profile: cpu_demo
@@ -33,9 +33,26 @@ tracker:
     track_low_thresh: 0.05
     track_high_thresh: 0.20
     new_track_thresh: 0.20
-    track_buffer: 45
+    # 90 frames (~3.6s at 25fps) keeps a head's ID alive across pole/crowd
+    # occlusions so it is re-acquired instead of becoming a new ID. Proven on
+    # the MOT20 oracle test: good detection + this buffer -> ~0 ID switches.
+    track_buffer: 90
     match_thresh: 0.70
     fuse_score: true
+  head_stitching:
+    enabled: true
+    # v7 winner: fix_0p16_wide_guard_app. Keeps unique IDs low while reducing
+    # large post-occlusion jumps compared with raw wide stitching.
+    gap_frames: 220
+    dist_heads: 5.0
+    mode: observation
+    ambiguity_ratio: 0.95
+    max_speed_heads: 0.85
+    appearance_weight: 0.20
+    max_appearance_cost: 0.82
+    direction_weight: 0.12
+    max_direction_cost: 0.85
+    max_jump_heads: 7.5
 
 persistence:
   db_url: sqlite:///data/outputs/analytics.db

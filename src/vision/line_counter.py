@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from src.vision.zone_manager import PointStrategy, point_from_bbox
+from src.vision.zone_manager import PointStrategy, point_from_bbox, resolve_anchor_strategy
 
 Point = tuple[float, float]
 
@@ -64,6 +64,7 @@ class LineManager:
 
     config: LineConfig
     point_strategy: PointStrategy = "bottom_center"
+    per_detection_anchor: bool = False
     in_count: int = 0
     out_count: int = 0
     track_last_side: dict[int, int] = field(default_factory=dict)
@@ -104,7 +105,10 @@ class LineManager:
             if track_id is None or bbox is None:
                 continue
 
-            side = _line_side(point_from_bbox(bbox, self.point_strategy), self.config.start, self.config.end)
+            strategy = resolve_anchor_strategy(
+                track, self.point_strategy, per_detection=self.per_detection_anchor
+            )
+            side = _line_side(point_from_bbox(bbox, strategy), self.config.start, self.config.end)
             previous = self.track_last_side.get(track_id)
             self.track_last_side[track_id] = side
 

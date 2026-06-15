@@ -1,11 +1,10 @@
 # Accuracy Improvement Plan
 
-> Diagnosis + planning document for the next coding agent ("Agent 3").
-> **No source code was changed to produce this file.** No new test runs were
-> executed; every number quoted below is traced to an existing report or config
-> and labelled as either a **measured metric**, an **observational count**, or a
-> **configured default**. Nothing here claims an accuracy improvement, because no
-> new accuracy was measured.
+> Diagnosis + planning document for improving passenger counting accuracy.
+> Any number quoted below must be treated as either a **measured metric**, an
+> **observational count**, or a **configured default**. Nothing here claims a
+> production accuracy improvement, because production accuracy still requires
+> manually counted or labelled ground truth on representative footage.
 
 ---
 
@@ -28,11 +27,11 @@ provides (2) below so the explanation can be reused in the boss package.
 Indian Railway platforms need an automatic way to **count passengers and detect
 crowding** from camera feeds, so staff can react to overcrowding near train
 doors and on platform edges. This MVP processes a video, detects each passenger
-(either by **full body** or by **head**), tracks them with stable IDs, counts
-how many are inside defined **zones**, counts how many **cross virtual lines**,
-raises **crowd alerts** when occupancy passes thresholds, logs everything to a
-database, exports CSV reports, and shows a **web app comparison** of body vs head
-detection.
+(by **full body**, by **head**, or by **hybrid body + head**), tracks them with
+stable IDs, counts how many are inside defined **zones**, counts how many
+**cross virtual lines**, raises **crowd alerts** when occupancy passes
+thresholds, logs everything to a database, exports CSV reports, and shows a
+**web app comparison** of body, head, and hybrid detection.
 
 ### Assumptions Made
 
@@ -44,14 +43,18 @@ detection.
   platform view — but it is **stock footage, not confirmed CCTV**, and not Indian.
 - Zones, lines, and thresholds are assumed to be **per-camera** and were
   hand-calibrated to this one clip.
+- Hybrid mode is assumed to need camera-specific body/head ROIs so the body
+  detector focuses on visible full persons and the head detector focuses on
+  far, packed, or occluded passengers.
 - "Accuracy" so far has been judged **visually**; there is **no labelled ground
   truth** on the test video, so no precision/recall has been measured on it.
 
 ### In Scope
 
 - Body and head passenger detection on recorded video.
+- Hybrid body + head detection with duplicate removal.
 - Tracking IDs, zone occupancy, line crossing, crowd alerts.
-- SQLite logging, CSV reports, Streamlit body-vs-head comparison.
+- SQLite logging, CSV reports, Streamlit body/head/hybrid comparison.
 - No-retrain tuning (confidence / image size / NMS / tracker / zones).
 
 ### Out of Scope (for now)
@@ -64,8 +67,9 @@ detection.
 
 ### Steps Involved (method)
 
-`video → detection (body or head) → tracking IDs → zone occupancy → line
-crossing → crowd alerts → SQLite logging → CSV report → web app comparison.`
+`video → detection (body, head, or hybrid) → duplicate removal in hybrid mode →
+tracking IDs → zone occupancy → line crossing → crowd alerts → SQLite logging →
+CSV report → web app comparison.`
 
 ---
 
@@ -93,6 +97,19 @@ crossing → crowd alerts → SQLite logging → CSV report → web app comparis
 - Canonical: `models/fine_tuned/head_detector/weights/best.pt`
 - Source copy: `artifacts/colab/best.pt` (hash-matched)
 - `last.pt` and `results.csv` also present in the same folder.
+
+**Hybrid body + head mode**
+- Runs pretrained body/person detection and the fine-tuned head detector in one
+  pipeline.
+- Intended use:
+  - body detection where the full person is visible;
+  - head detection for far, packed, or occluded passengers where bodies are
+    hidden.
+- Uses configured `near_body_zone` and `far_head_zone` ROIs when present in the
+  zones config, then fuses body/head detections and removes likely duplicates
+  before tracking.
+- This is an engineering approach to improve review coverage. It is **not** an
+  accuracy claim until compared with manual ground truth.
 
 **Local evaluation metrics available?**
 - **Measured metrics exist only on the RPEE-Heads validation split**
@@ -122,36 +139,37 @@ FrameProcessor._maybe_resize (resize_width=None by default → no resize)
 Detector / Tracker  (Ultralytics YOLO)
    - conf, iou, classes=[0], imgsz, half, device                 src/vision/detector.py, tracker.py
    - body: yolo11n.pt   |   head: head_detector/best.pt
+   - hybrid: body detector + head detector + duplicate removal    src/vision/hybrid_detector.py
    │
    ▼
 DetectionRegionFilter  (include/ignore polygons, size/aspect gates)   src/vision/detection_filter.py
    │
    ▼
 ZoneManager (point-in-polygon occupancy)  +  LineManager (directional crossings)
-   - point strategy: body=bottom_center, head=center
+   - point strategy: body=bottom_center, head=center, hybrid=per-detection anchor
    │
    ▼
 CrowdAnalyzer (warning/critical/dwell thresholds)              configs/thresholds.yaml
    │
    ├─► AnalyticsLogger → SQLite (run_sessions, frames_processed, zone_occupancy, …)
-   ├─► annotate_frame → VideoWriter (body_demo.mp4 / head_demo.mp4)
+   ├─► annotate_frame → VideoWriter (body_demo.mp4 / head_demo.mp4 / hybrid_demo.mp4)
    └─► export_report.py → CSV
                                    │
                                    ▼
-                      Streamlit app (body vs head comparison)
+                      Streamlit app (body/head/hybrid comparison)
 ```
 
 Key configured defaults today:
-- confidence: body `0.35`; head auto-lowered to `min(conf, 0.25)` when no CLI
-  value, comparison script default head `0.15`
-  ([scripts/run_video_demo.py:264](../scripts/run_video_demo.py#L264),
-  [scripts/run_comparison_demo.py:52](../scripts/run_comparison_demo.py#L52)).
-- imgsz: `640` default; head auto-bumped to `max(imgsz, 1536)` when no CLI value
-  ([scripts/run_video_demo.py:269](../scripts/run_video_demo.py#L269)).
-- iou (NMS): fixed `0.5` in config, **no CLI override exists**.
+- confidence: body `0.35`; head default `0.25`; comparison runs can pass
+  separate body/head confidence values.
+- imgsz: body default `640`; head default `1280`; hybrid can pass separate
+  body/head image sizes.
+- iou (NMS): default `0.5` in config; CLI override is available.
 - tracker: `bytetrack`, `track_low_thresh: 0.10`, `fuse_score: true`.
 - resize_width: empty → **frames are not downscaled**; YOLO letterboxes to imgsz.
-- augment (TTA): **off** (not exposed anywhere).
+- augment (TTA): default **off**; CLI/dashboard toggle is available.
+- max_det: body default `300`; head default `1000`; hybrid can pass separate
+  body/head maximum detections per frame.
 
 ---
 
@@ -198,14 +216,19 @@ Most likely contributors, ordered roughly by impact:
 
 9. **Zone / line geometry not comparable across modes.** Body uses
    `bottom_center` (feet), head uses `center`. The shared line geometry was drawn
-   for body-scale boxes, so body vs head line counts are not directly comparable
+   for body-scale boxes, so body/head line counts are not directly comparable
    (retest: 59 vs 2 crossings). This looks like "low accuracy" but is a
    calibration artifact.
 
-10. **CPU inference budget.** `device: cpu` limits how far imgsz/TTA can be pushed
+10. **Hybrid depends on ROI and fusion calibration.** Hybrid mode can reduce
+    obvious body/head duplicates, but it can still miss people, keep false
+    positives, or remove a valid nearby head if ROIs and duplicate-removal
+    thresholds are not tuned for that camera.
+
+11. **CPU inference budget.** `device: cpu` limits how far imgsz/TTA can be pushed
     before FPS becomes impractical, forcing accuracy/throughput trade-offs.
 
-11. **Compressed stock footage.** Block/compression artifacts on small heads
+12. **Compressed stock footage.** Block/compression artifacts on small heads
     further hurt detection; real CCTV will have different (often worse) noise.
 
 ---
@@ -234,6 +257,9 @@ These can be measured and tuned without retraining. None of them should be
 - **Better zone configuration.** Re-calibrate polygons per camera; align body and
   head reference points/geometry so cross-mode comparisons are fair. Avoid
   clip-specific `ignore_polygons` as a substitute for a good confidence threshold.
+- **Hybrid ROI/fusion tuning.** Configure `near_body_zone` and `far_head_zone`
+  per camera. Tune duplicate removal so one passenger is not counted twice when
+  both the body and head are detected.
 - **Show confidence scores.** Already drawn in the overlay; surface a per-frame
   detection-count and mean-confidence overlay so the boss can see *why* counts
   change between settings.
@@ -304,23 +330,22 @@ Define accuracy concretely **before** tuning, so changes are measurable.
 - **Line-crossing error** — predicted vs human IN/OUT counts.
 - **FPS / latency** — frames/sec at each imgsz on the demo device, so accuracy
   gains are reported with their cost.
-- **Body vs head comparison** — same clip, same (re-aligned) geometry, report both
-  modes' counts and errors side by side.
+- **Body/head/hybrid comparison** — same clip, same calibrated geometry, report
+  all three modes' counts and errors side by side.
 
 Record all of the above in a results table per configuration so the "best"
 setting is chosen on evidence, not by eye.
 
 ---
 
-## Specific Code Changes For Agent 3
+## Specific Code Changes / Checklist
 
 File-by-file, concrete and minimal. Keep all knobs **configurable** and
 defaulting to current behavior.
 
 - **[configs/app.yaml](../configs/app.yaml)**
-  - Add `model.augment: false` (TTA toggle) and keep `iou` here as the default.
-  - Optionally add a `head:` sub-block for head-specific `confidence`, `imgsz`,
-    `iou` defaults instead of hard-coding them in scripts.
+  - Keep `model.augment: false`, `model.iou`, `model.max_det`, and head-specific
+    `head_confidence`, `head_imgsz`, and `head_max_det` configurable.
 
 - **[configs/thresholds.yaml](../configs/thresholds.yaml)**
   - No structural change required; document that thresholds are per-camera and add
@@ -350,15 +375,16 @@ defaulting to current behavior.
     `run_video_demo.py`). Helps reviewers see the effect of threshold changes.
 
 - **[scripts/run_video_demo.py](../scripts/run_video_demo.py)**
-  - Add `--iou`, `--augment`, `--max-det` CLI flags (currently only `--confidence`
-    and `--imgsz` exist). Wire them into `build_models`.
-  - Surface `Detections` and `MeanConf` in the `overlays` dict passed to
+  - Keep `--iou`, `--augment`, `--max-det`, and hybrid-specific body/head
+    overrides wired into model creation.
+  - Surface detection count and tuning settings in the overlay passed to
     `annotate_frame`.
 
 - **[scripts/run_comparison_demo.py](../scripts/run_comparison_demo.py)**
-  - Pass through new `--iou` / `--augment` for both modes; stop hard-coding head
-    `0.15`/`1536` and instead read head defaults from config so the comparison is
-    reproducible.
+  - Keep pass-through for `--iou`, `--augment`, body/head image sizes, max-det,
+    and head confidence.
+  - Run body, head, and hybrid on the same source/config so dashboard comparison
+    is reproducible.
 
 - **[scripts/evaluate_head_detector.py](../scripts/evaluate_head_detector.py)**
   - This currently only prints avg/max detections per frame. **Add a true
@@ -373,11 +399,11 @@ defaulting to current behavior.
     is the artifact the boss wants for "increase accuracy."
 
 - **[src/dashboard/streamlit_app.py](../src/dashboard/streamlit_app.py)**
-  - Add a short, plain-English explanation of **confidence** and **image size**
+  - Keep the plain-English explanation of **confidence** and **image size**
     ("lower confidence = more detections but more false alarms; larger image =
     catches smaller/farther heads but runs slower").
-  - Optionally expose conf/imgsz selectors and show the multi-threshold outputs
-    side by side.
+  - Show body, head, and hybrid outputs side by side with current detections,
+    average detections/frame, unique tracks, zone occupancy, and line counts.
 
 - **docs/**
   - Add an **accuracy comparison report** (results of the sweep + evaluation) once
@@ -388,7 +414,7 @@ defaulting to current behavior.
 
 ## Acceptance Criteria
 
-Agent 3's work is complete when:
+This work is complete when:
 
 - Confidence threshold is configurable (already true) **and** swept/measured.
 - Image size is configurable (already true) **and** compared across ≥3 values.
@@ -398,7 +424,7 @@ Agent 3's work is complete when:
 - An accuracy comparison report exists in `docs/`, with measured numbers (or
   clearly labelled observational counts where no ground truth exists yet).
 - The web app explains confidence/threshold/image-size in plain language.
-- Final output videos exist for **both** body and head modes on the agreed clip.
+- Final output videos exist for **body**, **head**, and **hybrid** modes on the agreed clip.
 - No fabricated metrics; no synthetic video; no local retraining unless requested.
 
 ---

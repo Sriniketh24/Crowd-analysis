@@ -34,7 +34,10 @@ from src.vision.annotator import annotate_frame
 from src.vision.crowd_analyzer import CrowdAnalyzer, ZoneAlertThresholds
 from src.vision.detection_filter import DetectionRegionFilter
 from src.vision.detector import DEFAULT_HEAD_MODEL_PATH, Detector, normalize_detector_mode
+from src.vision.fusion_tracker import HybridTracker
+from src.vision.hybrid_detector import HybridDetector, load_hybrid_roi_config
 from src.vision.line_counter import LineConfig, LineManager
+from src.vision.track_stitcher import TrackStitcher, TrackStitcherConfig
 from src.vision.tracker import Tracker
 from src.vision.zone_manager import PointStrategy, ZoneConfig, ZoneManager
 
@@ -42,6 +45,7 @@ from src.vision.zone_manager import PointStrategy, ZoneConfig, ZoneManager
 DETECTOR_MODE_LABELS = {
     "body": "Full-Body Passenger Detection",
     "head": "Head-Based Passenger Detection",
+    "hybrid": "Hybrid Body+Head Passenger Detection",
 }
 
 
@@ -74,9 +78,61 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--detector-mode",
         type=str,
-        choices=["body", "head"],
+        choices=["body", "head", "hybrid"],
         default="body",
-        help="Detection target: body uses pretrained person detection; head uses the fine-tuned head detector.",
+        help=(
+            "Detection target: body uses pretrained person detection; head uses the fine-tuned "
+            "head detector; hybrid runs body detection in near_body_zone and head detection in "
+            "far_head_zone, then fuses both into one tracked stream."
+        ),
+    )
+    parser.add_argument(
+        "--body-model",
+        type=str,
+        default=None,
+        help="Hybrid mode: body/person detection weights (defaults to the configured body model).",
+    )
+    parser.add_argument(
+        "--head-model",
+        type=str,
+        default=None,
+        help="Hybrid mode: head detection weights (defaults to the fine-tuned head detector).",
+    )
+    parser.add_argument(
+        "--body-confidence",
+        type=float,
+        default=None,
+        help="Hybrid mode: confidence threshold for the body detector.",
+    )
+    parser.add_argument(
+        "--head-confidence",
+        type=float,
+        default=None,
+        help="Hybrid mode: confidence threshold for the head detector.",
+    )
+    parser.add_argument(
+        "--body-imgsz",
+        type=int,
+        default=None,
+        help="Hybrid mode: inference image size for the body detector.",
+    )
+    parser.add_argument(
+        "--head-imgsz",
+        type=int,
+        default=None,
+        help="Hybrid mode: inference image size for the head detector.",
+    )
+    parser.add_argument(
+        "--body-max-det",
+        type=int,
+        default=None,
+        help="Hybrid mode: maximum detections per frame for the body detector.",
+    )
+    parser.add_argument(
+        "--head-max-det",
+        type=int,
+        default=None,
+        help="Hybrid mode: maximum detections per frame for the head detector.",
     )
     parser.add_argument("--device", type=str, default=None, help="Inference device: cpu, cuda, mps, etc.")
     parser.add_argument("--tracker", type=str, default=None, choices=["bytetrack", "botsort"])
@@ -173,6 +229,7 @@ def load_zone_and_line_managers(
     target_width: int | None = None,
     target_height: int | None = None,
     point_strategy: PointStrategy = "bottom_center",
+    per_detection_anchor: bool = False,
 ) -> tuple[ZoneManager, list[LineManager]]:
     """Load zone and line configuration managers from one JSON file."""
     if not zones_config_path.exists():
@@ -200,7 +257,11 @@ def load_zone_and_line_managers(
                 [point[0] * scale_x, point[1] * scale_y] for point in zone_copy.get("polygon", [])
             ]
         zone_configs.append(ZoneConfig.from_dict(zone_copy))
-    zone_manager = ZoneManager(zones=zone_configs, point_strategy=point_strategy)
+    zone_manager = ZoneManager(
+        zones=zone_configs,
+        point_strategy=point_strategy,
+        per_detection_anchor=per_detection_anchor,
+    )
 
     lines_raw = raw.get("lines", [])
     if not isinstance(lines_raw, list):
@@ -231,6 +292,7 @@ def load_zone_and_line_managers(
                     out_label=str(line.get("out_label", "OUT")),
                 ),
                 point_strategy=point_strategy,
+                per_detection_anchor=per_detection_anchor,
             )
         )
     return zone_manager, line_managers
@@ -288,6 +350,28 @@ def resolve_runtime_args(args: argparse.Namespace, settings: AppSettings, camera
         max_det = settings.model.head_max_det
     augment = settings.model.augment if args.augment is None else bool(args.augment)
     iou = args.iou if args.iou is not None else settings.model.iou
+
+    # Hybrid mode runs two detectors with independent per-source overrides.
+    body_model = args.body_model or args.model or settings.model.weights
+    head_model = args.head_model or str(DEFAULT_HEAD_MODEL_PATH)
+    body_confidence = (
+        args.body_confidence if args.body_confidence is not None else settings.model.confidence
+    )
+    head_confidence = (
+        args.head_confidence if args.head_confidence is not None else settings.model.head_confidence
+    )
+    body_imgsz = args.body_imgsz if args.body_imgsz is not None else settings.model.imgsz
+    head_imgsz = args.head_imgsz if args.head_imgsz is not None else settings.model.head_imgsz
+    body_max_det = args.body_max_det if args.body_max_det is not None else settings.model.max_det
+    head_max_det = args.head_max_det if args.head_max_det is not None else settings.model.head_max_det
+
+    per_detection_anchor = detector_mode == "hybrid"
+    if detector_mode == "hybrid":
+        point_strategy: PointStrategy = "bottom_center"
+    elif detector_mode == "head":
+        point_strategy = "center"
+    else:
+        point_strategy = "bottom_center"
     return {
         "source": source,
         "source_type": source_type,
@@ -295,7 +379,16 @@ def resolve_runtime_args(args: argparse.Namespace, settings: AppSettings, camera
         "zones_config": Path(zones_config),
         "model": model,
         "detector_mode": detector_mode,
-        "point_strategy": "center" if detector_mode == "head" else "bottom_center",
+        "point_strategy": point_strategy,
+        "per_detection_anchor": per_detection_anchor,
+        "body_model": body_model,
+        "head_model": head_model,
+        "body_confidence": float(body_confidence),
+        "head_confidence": float(head_confidence),
+        "body_imgsz": int(body_imgsz),
+        "head_imgsz": int(head_imgsz),
+        "body_max_det": int(body_max_det),
+        "head_max_det": int(head_max_det),
         "detector_mode_label": DETECTOR_MODE_LABELS[detector_mode],
         "confidence": float(confidence),
         "iou": float(iou),
@@ -370,6 +463,85 @@ def build_models(
     return detector, tracker
 
 
+def build_hybrid_models(
+    settings: AppSettings,
+    effective: dict[str, Any],
+    *,
+    target_width: int | None,
+    target_height: int | None,
+) -> tuple[HybridDetector, HybridTracker]:
+    """Build the hybrid body+head detector and the unified fusion tracker."""
+    body_detector = Detector(
+        weights_path=effective["body_model"],
+        device=effective["device"],
+        confidence=effective["body_confidence"],
+        iou=effective["iou"],
+        person_class_id=settings.model.person_class_id,
+        imgsz=effective["body_imgsz"],
+        augment=effective["augment"],
+        max_det=effective["body_max_det"],
+        half=settings.model.half,
+        accuracy_weights=settings.model.accuracy_weights,
+        legacy_fallback_weights=settings.model.legacy_fallback_weights,
+        use_fine_tuned_if_available=settings.model.use_fine_tuned_if_available,
+        detector_mode="body",
+    )
+    head_detector = Detector(
+        weights_path=effective["head_model"],
+        device=effective["device"],
+        confidence=effective["head_confidence"],
+        iou=effective["iou"],
+        person_class_id=settings.model.person_class_id,
+        imgsz=effective["head_imgsz"],
+        augment=effective["augment"],
+        max_det=effective["head_max_det"],
+        half=settings.model.half,
+        use_fine_tuned_if_available=False,
+        detector_mode="head",
+    )
+    roi_config = load_hybrid_roi_config(
+        effective["zones_config"],
+        target_width=target_width,
+        target_height=target_height,
+    )
+    # The body detector always runs full-frame in hybrid mode so passengers
+    # outside any near zone are still detected; fusion de-dupes overlapping far
+    # heads. Empty near_body_polygons disables both the ROI crop and the polygon
+    # post-filter. The head detector stays restricted to far_head_polygons.
+    roi_config.near_body_polygons = []
+    hybrid_detector = HybridDetector(
+        body_detector=body_detector,
+        head_detector=head_detector,
+        roi_config=roi_config,
+    )
+    hybrid_tracker = HybridTracker(prefer_bytetrack=True)
+    return hybrid_detector, hybrid_tracker
+
+
+def build_track_stitcher(settings: AppSettings, detector_mode: str) -> TrackStitcher | None:
+    """Build the optional head-ID stitcher for head or hybrid modes."""
+    mode = normalize_detector_mode(detector_mode)
+    if mode not in {"head", "hybrid"}:
+        return None
+    raw = dict(settings.tracker.head_stitching)
+    if not bool(raw.get("enabled", False)):
+        return None
+    config = TrackStitcherConfig(
+        enabled=True,
+        gap_frames=int(raw.get("gap_frames", 220)),
+        dist_heads=float(raw.get("dist_heads", 5.0)),
+        mode=str(raw.get("mode", "observation")),
+        ambiguity_ratio=float(raw.get("ambiguity_ratio", 0.95)),
+        max_speed_heads=float(raw.get("max_speed_heads", 0.85)),
+        appearance_weight=float(raw.get("appearance_weight", 0.0)),
+        max_appearance_cost=float(raw.get("max_appearance_cost", 1.0)),
+        direction_weight=float(raw.get("direction_weight", 0.12)),
+        max_direction_cost=float(raw.get("max_direction_cost", 0.85)),
+        max_jump_heads=float(raw.get("max_jump_heads", 7.5)),
+    )
+    return TrackStitcher(config)
+
+
 def validate_head_model(model: str) -> str | None:
     """Return an actionable error message when a head-model path is missing."""
     model_path = Path(model)
@@ -407,6 +579,11 @@ def run_pipeline(args: argparse.Namespace) -> int:
         if missing_model_message:
             print(missing_model_message)
             return 1
+    elif effective["detector_mode"] == "hybrid":
+        missing_model_message = validate_head_model(effective["head_model"])
+        if missing_model_message:
+            print(missing_model_message)
+            return 1
 
     reader = StreamReader(
         source=effective["source"],
@@ -441,6 +618,7 @@ def run_pipeline(args: argparse.Namespace) -> int:
             target_width=target_width,
             target_height=target_height,
             point_strategy=effective["point_strategy"],
+            per_detection_anchor=effective["per_detection_anchor"],
         )
     except (FileNotFoundError, ValueError, KeyError, TypeError) as error:
         print(f"Zone/line config load failed: {error}")
@@ -458,19 +636,32 @@ def run_pipeline(args: argparse.Namespace) -> int:
         detector_mode=effective["detector_mode"],
     )
 
+    hybrid_detector = None
+    hybrid_tracker = None
+    detector = None
+    tracker = None
+    track_stitcher = build_track_stitcher(settings, effective["detector_mode"])
     try:
-        detector, tracker = build_models(
-            settings,
-            model=effective["model"],
-            confidence=effective["confidence"],
-            device=effective["device"],
-            tracker_type=effective["tracker_type"],
-            detector_mode=effective["detector_mode"],
-            imgsz=effective["imgsz"],
-            iou=effective["iou"],
-            augment=effective["augment"],
-            max_det=effective["max_det"],
-        )
+        if effective["detector_mode"] == "hybrid":
+            hybrid_detector, hybrid_tracker = build_hybrid_models(
+                settings,
+                effective,
+                target_width=target_width,
+                target_height=target_height,
+            )
+        else:
+            detector, tracker = build_models(
+                settings,
+                model=effective["model"],
+                confidence=effective["confidence"],
+                device=effective["device"],
+                tracker_type=effective["tracker_type"],
+                detector_mode=effective["detector_mode"],
+                imgsz=effective["imgsz"],
+                iou=effective["iou"],
+                augment=effective["augment"],
+                max_det=effective["max_det"],
+            )
     except RuntimeError as error:
         print(f"Model initialization failed: {error}")
         reader.release()
@@ -485,6 +676,9 @@ def run_pipeline(args: argparse.Namespace) -> int:
         detection_filter=detection_filter,
         use_tracking=True,
         resize_width=effective["resize_width"],
+        hybrid_detector=hybrid_detector,
+        hybrid_tracker=hybrid_tracker,
+        track_stitcher=track_stitcher,
     )
 
     analytics_logger = None

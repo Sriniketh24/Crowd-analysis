@@ -10,7 +10,10 @@ import numpy as np
 from src.vision.detector import Detector, NormalizedDetection
 from src.vision.crowd_analyzer import CrowdAnalyzer
 from src.vision.detection_filter import DetectionRegionFilter
+from src.vision.fusion_tracker import HybridTracker
+from src.vision.hybrid_detector import HybridDetector
 from src.vision.line_counter import LineCrossing, LineManager
+from src.vision.track_stitcher import TrackStitcher
 from src.vision.zone_manager import ZoneManager
 from src.vision.tracker import Tracker, normalize_tracks
 
@@ -49,6 +52,9 @@ class FrameProcessor:
         detection_filter: DetectionRegionFilter | None = None,
         use_tracking: bool = True,
         resize_width: int | None = None,
+        hybrid_detector: HybridDetector | None = None,
+        hybrid_tracker: HybridTracker | None = None,
+        track_stitcher: TrackStitcher | None = None,
     ) -> None:
         """Build a modular frame processor with optional resize step."""
         self.detector = detector
@@ -59,6 +65,9 @@ class FrameProcessor:
         self.detection_filter = detection_filter
         self.use_tracking = use_tracking and tracker is not None
         self.resize_width = resize_width
+        self.hybrid_detector = hybrid_detector
+        self.hybrid_tracker = hybrid_tracker
+        self.track_stitcher = track_stitcher
         self._unique_track_ids_seen: set[int] = set()
         self._last_processed_timestamp: float | None = None
 
@@ -83,6 +92,24 @@ class FrameProcessor:
         prepared = preprocess_frame(frame)
         prepared = self._maybe_resize(prepared)
 
+        if self.hybrid_detector is not None:
+            fused = self.hybrid_detector.detect(
+                prepared,
+                frame_index=frame_index,
+                timestamp=timestamp,
+            )
+            if self.detection_filter is not None:
+                fused = self.detection_filter.filter(fused)
+            if self.hybrid_tracker is not None:
+                fused = self.hybrid_tracker.update(
+                    fused,
+                    frame_index=frame_index,
+                    timestamp=timestamp,
+                )
+            if self.track_stitcher is not None:
+                fused = self.track_stitcher.update(fused, frame_index=frame_index, frame=prepared)
+            return self._build_result(prepared, fused, frame_index=frame_index, timestamp=timestamp)
+
         if self.use_tracking and self.tracker is not None:
             tracked = self.tracker.track(
                 frame=prepared,
@@ -92,6 +119,8 @@ class FrameProcessor:
             normalized = normalize_tracks(tracked)
             if self.detection_filter is not None:
                 normalized = self.detection_filter.filter(normalized)
+            if self.track_stitcher is not None:
+                normalized = self.track_stitcher.update(normalized, frame_index=frame_index, frame=prepared)
             return self._build_result(prepared, normalized, frame_index=frame_index, timestamp=timestamp)
 
         if self.detector is None:

@@ -13,3 +13,4 @@ python-dotenv
 sqlalchemy
 pytest
 httpx
+boxmot
